@@ -1,0 +1,53 @@
+{
+  "name": "quantum-brain",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "dev:demo": "wrangler dev -c wrangler.demo.jsonc --port 8799",
+    "predeploy": "node scripts/predeploy-guard.mjs",
+    "check:scope": "node scripts/check-scope.mjs",
+    "deploy": "wrangler deploy",
+    "deploy:worker": "node scripts/release.mjs worker",
+    "deploy:app": "node scripts/release.mjs app",
+    "deploy:all": "node scripts/release.mjs all",
+    "deploy:tag": "node scripts/release.mjs tag",
+    "db:create": "wrangler d1 create second-brain-db",
+    "db:migrate": "wrangler d1 execute second-brain-db --file=db/schema.sql",
+    "db:migrate:remote": "wrangler d1 execute second-brain-db --remote --file=db/schema.sql",
+    "vectors:create": "wrangler vectorize create second-brain-vectors --dimensions=384 --metric=cosine",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "cf-typegen": "wrangler types",
+    "typecheck": "wrangler types && tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "^0.8.2",
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "agents": "^0.20.1",
+    "ical.js": "^2.2.1",
+    "postal-mime": "^2.7.5",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "@vitest/coverage-v8": "^4.1.10",
+    "esbuild": "^0.28.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.114.0"
+  },
+  "overrides": {
+    "undici": "7.29.0"
+  },
+  "cloudflare": {
+    "bindings": {
+      "AUTH_TOKEN": {
+        "description": "Your authentication token. Use a memorable phrase (like 'coffee-lover-2026') or generate a secure token with: openssl rand -base64 32. Save it - you'll need this for AI client connections!"
+      }
+    }
+  }
+}
