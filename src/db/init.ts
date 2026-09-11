@@ -128,6 +128,16 @@ const SCHEMA_OBJECTS: Record<string, string> = {
   idx_admin_events_created: `CREATE INDEX IF NOT EXISTS idx_admin_events_created ON admin_events(created_at DESC)`,
   // Single-row table driving the nightly round-robin over workspaces.
   maintenance_cursor: `CREATE TABLE IF NOT EXISTS maintenance_cursor (id INTEGER PRIMARY KEY CHECK (id = 1), workspace_id TEXT NOT NULL DEFAULT '', advanced_at INTEGER NOT NULL DEFAULT 0)`,
+  // Quantum Brain billing (Phase D). One row per paying customer. `id` IS the
+  // customer's users.id: the customer authenticates exactly like a team member
+  // (users.token_hash = SHA-256 of api_key) and owns one personal workspace, so
+  // every scoped read and write in src/ isolates them with no billing-specific
+  // predicate anywhere. Additive: a self-hosted brain never writes here.
+  customers: `CREATE TABLE IF NOT EXISTS customers (id TEXT PRIMARY KEY, api_key TEXT NOT NULL, email TEXT NOT NULL, stripe_customer_id TEXT NOT NULL, stripe_subscription_id TEXT NOT NULL DEFAULT '', plan TEXT NOT NULL DEFAULT 'monthly', status TEXT NOT NULL DEFAULT 'active', created_at INTEGER NOT NULL, cancelled_at INTEGER, email_sent_at INTEGER)`,
+  idx_customers_api_key: `CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_api_key ON customers(api_key)`,
+  // Webhooks arrive keyed by Stripe's ids, and both lookups have to be exact.
+  idx_customers_stripe_customer: `CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_stripe_customer ON customers(stripe_customer_id)`,
+  idx_customers_email: `CREATE INDEX IF NOT EXISTS idx_customers_email ON customers(email)`,
 };
 
 /**

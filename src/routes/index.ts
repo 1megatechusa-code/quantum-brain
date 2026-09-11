@@ -13,6 +13,7 @@ import { handleBriefRoutes } from "./brief";
 import { handleConfigRoutes } from "./config";
 import { handleMigrationRoutes } from "./migration";
 import { handleOAuthRevokeRoutes } from "./oauth-revoke";
+import { handleBillingRoutes } from "./billing";
 
 type RouteHandler = (
   request: Request,
@@ -22,6 +23,9 @@ type RouteHandler = (
 ) => Promise<Response | null>;
 
 const routeHandlers: RouteHandler[] = [
+  // First, and the only public routes: a buyer has no key yet and Stripe signs
+  // its own requests. See src/routes/billing.ts.
+  handleBillingRoutes,
   handleCaptureRoutes,
   handlePromptCapsuleRoutes,
   handleRecallRoutes,

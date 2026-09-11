@@ -27,10 +27,18 @@
 		}
 	],
 	"vars": {
-		"VECTORIZE_GRACE_MS": "300000"
+		"VECTORIZE_GRACE_MS": "300000",
+		// Quantum Brain billing (Phase D). Not secrets: price ids and addresses
+		// are public by nature. The three secrets are listed below and set with
+		// `wrangler secret put <NAME>`; .dev.vars carries them for local dev.
+		"QB_PRICE_MONTHLY": "price_1UEBLtGDL1gkZUNCDqdPZuwi",
+		"QB_PRICE_YEARLY": "price_1UEBNTGDL1gkZUNCRwIZIFr2",
+		"EMAIL_FROM": "support@getaiskilldrops.com",
+		"EMAIL_REPLY_TO": "1megatechusa@gmail.com",
+		"WORKER_BASE_URL": "https://quantum-brain.1megatechusa.workers.dev"
 	},
 	"secrets": {
-		"required": ["AUTH_TOKEN"]
+		"required": ["AUTH_TOKEN", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "RESEND_API_KEY"]
 	},
 	"assets": {
 		"directory": "./public"

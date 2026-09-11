@@ -218,6 +218,27 @@ CREATE TABLE IF NOT EXISTS maintenance_cursor (
 INSERT INTO maintenance_cursor (id, workspace_id, advanced_at) VALUES (1, '', 0)
   ON CONFLICT DO NOTHING;
 
+-- Quantum Brain billing (Phase D). One row per paying customer. `id` is the
+-- customer's users.id: a customer authenticates exactly like a team member
+-- (users.token_hash = SHA-256 of api_key) and owns one personal workspace, so
+-- the existing workspace scoping isolates their data. api_key is kept in the
+-- clear here — and only here — so a lost key can be resent to its owner.
+CREATE TABLE IF NOT EXISTS customers (
+  id                     TEXT PRIMARY KEY,               -- = users.id; the customer id in /mcp/<id>
+  api_key                TEXT NOT NULL,                  -- qb_ + 32 alphanumerics
+  email                  TEXT NOT NULL,
+  stripe_customer_id     TEXT NOT NULL,
+  stripe_subscription_id TEXT NOT NULL DEFAULT '',
+  plan                   TEXT NOT NULL DEFAULT 'monthly', -- monthly | yearly
+  status                 TEXT NOT NULL DEFAULT 'active',  -- active | cancelled
+  created_at             INTEGER NOT NULL,
+  cancelled_at           INTEGER,
+  email_sent_at          INTEGER                         -- activation email delivered (NULL = owed; a webhook retry resends)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_api_key ON customers(api_key);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_stripe_customer ON customers(stripe_customer_id);
+CREATE INDEX IF NOT EXISTS idx_customers_email ON customers(email);
+
 -- Capsule-only index: missing project ids never scan ordinary memories.
 CREATE INDEX IF NOT EXISTS idx_entries_capsule ON entries(workspace_id, id)
 WHERE instr(lower(tags), '"capsule:') > 0;

@@ -57,6 +57,8 @@ const LEGACY_SHAPES: Record<string, string> = {
   // target_user_id and workspace_id a release later.
   admin_events: `CREATE TABLE admin_events (id TEXT PRIMARY KEY, actor_id TEXT NOT NULL DEFAULT '', event TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL)`,
   maintenance_cursor: `CREATE TABLE maintenance_cursor (id INTEGER PRIMARY KEY CHECK (id = 1), workspace_id TEXT NOT NULL DEFAULT '', advanced_at INTEGER NOT NULL DEFAULT 0)`,
+  // Quantum Brain billing (Phase D), as first shipped.
+  customers: `CREATE TABLE customers (id TEXT PRIMARY KEY, api_key TEXT NOT NULL, email TEXT NOT NULL, stripe_customer_id TEXT NOT NULL, stripe_subscription_id TEXT NOT NULL DEFAULT '', plan TEXT NOT NULL DEFAULT 'monthly', status TEXT NOT NULL DEFAULT 'active', created_at INTEGER NOT NULL, cancelled_at INTEGER, email_sent_at INTEGER)`,
 };
 
 /** `-- …` line comments, without mistaking a "--" inside a string literal for one. */
