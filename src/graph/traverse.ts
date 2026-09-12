@@ -238,7 +238,20 @@ async function hydrateGraphEntries(ids: string[], env: Env, identity?: Identity,
 }
 
 export async function getConnections(id: string, type: string | undefined, env: Env, config: Readonly<Config> = DEFAULTS, identity?: Identity): Promise<Connection[]> {
-  let neighbors = await expandGraph([id], { hops: 1 }, env, config, identity);
+  // includeDeprecated: true — this is a direct 1-hop lookup of a SPECIFIC
+  // entry's edges, not the exploratory /graph canvas, so an edge does not stop
+  // being an answer to "what is this linked to" just because the far endpoint
+  // was later deprecated. Left at the expandGraph default (false) this was
+  // silently dropping exactly the edges `supersedes` exists to show: every
+  // explicit/system supersedes edge deprecates its target (src/capture/entry.ts,
+  // src/capture/lifecycle.ts), so connections() on the newer (source) side came
+  // back empty for the one relation type whose entire point is "linked to a
+  // deprecated entry." The same filter could just as easily blank a `follows`
+  // edge whose earlier neighbour was independently deprecated later on. The
+  // permission scope check (readableAndDeprecatedAmong) still runs for an
+  // identified caller regardless of this flag — only the deprecation-based
+  // hiding is disabled, not workspace/team visibility.
+  let neighbors = await expandGraph([id], { hops: 1, includeDeprecated: true }, env, config, identity);
   if (type) neighbors = neighbors.filter(n => n.viaType === type);
   if (!neighbors.length) return [];
 

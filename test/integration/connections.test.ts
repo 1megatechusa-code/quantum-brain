@@ -78,4 +78,36 @@ describe("GET /connections", () => {
     expect(data.ok).toBe(true);
     expect(data.connections).toEqual([]);
   });
+
+  /**
+   * Bug fix (2026-09): every explicit/system `supersedes` edge deprecates its
+   * target (src/capture/entry.ts -> deprecateEntry), which is the entire point
+   * of the type. getConnections() defaulted expandGraph's includeDeprecated to
+   * false, so querying connections() from the newer (source) side of a
+   * supersedes edge silently came back empty — the deprecated target got
+   * filtered out of its own "what superseded me" edge. The same filter can
+   * blank a `follows` edge whose earlier neighbour was independently
+   * deprecated later. Fixed by passing includeDeprecated: true from
+   * getConnections, since this is a direct 1-hop lookup of a specific entry's
+   * edges, not the exploratory graph canvas.
+   */
+  it("still surfaces a supersedes edge when the superseded target is deprecated", async () => {
+    seedEntry(db, "a", "New decision");
+    seedEntry(db, "b", "Old decision", ["status:deprecated"]);
+    pushEdge(db, "a", "b", "supersedes");
+
+    const res = await worker.fetch(req("GET", "/connections?id=a"), env, ctx);
+    const data = await res.json() as any;
+    expect(data.connections.map((c: any) => c.id)).toEqual(["b"]);
+  });
+
+  it("still surfaces a follows edge when the earlier neighbour is deprecated", async () => {
+    seedEntry(db, "new", "New entry", ["kind:episodic"]);
+    seedEntry(db, "earlier", "Earlier entry", ["kind:episodic", "status:deprecated"]);
+    pushEdge(db, "new", "earlier", "follows");
+
+    const res = await worker.fetch(req("GET", "/connections?id=new"), env, ctx);
+    const data = await res.json() as any;
+    expect(data.connections.map((c: any) => c.id)).toEqual(["earlier"]);
+  });
 });
