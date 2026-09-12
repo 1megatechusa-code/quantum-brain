@@ -10,6 +10,19 @@ import { hashToken } from "../lib/identity";
  * them for free. The `customers` row beside it carries the billing facts and
  * the api_key in the clear (the users row holds only its hash, like a team
  * member's token) so a lost key can be resent.
+ *
+ * Identity is the STRIPE SUBSCRIPTION, not the email address. One subscription
+ * is one row, one key, one workspace: a person who buys twice with the same
+ * address holds two independent customers, and cancelling one of them can only
+ * ever suspend the row carrying that subscription id. The email is kept for
+ * correspondence and for one thing more — recognising a CANCELLED customer who
+ * comes back, so they get their key and memories back rather than a blank
+ * brain. It never merges two live subscriptions.
+ *
+ * Because of that, the users row stores NO email for a customer: users.email
+ * is UNIQUE (team members are keyed by it), and a second subscription under
+ * the same address must still get its own users row. The address lives in
+ * customers.email only.
  */
 
 export type Plan = "monthly" | "yearly";
@@ -64,20 +77,30 @@ export async function findCustomerById(env: Env, id: string): Promise<CustomerRo
   return env.DB.prepare(`SELECT * FROM customers WHERE id = ?`).bind(id).first<CustomerRow>();
 }
 
-export async function findCustomerByStripeCustomer(env: Env, stripeCustomerId: string): Promise<CustomerRow | null> {
-  if (!stripeCustomerId) return null;
-  return env.DB.prepare(`SELECT * FROM customers WHERE stripe_customer_id = ?`).bind(stripeCustomerId).first<CustomerRow>();
-}
-
+/**
+ * The subscription id is the customer's identity: the only lookup the webhook
+ * revokes on, and the first thing provisioning checks. Never ''.
+ */
 export async function findCustomerBySubscription(env: Env, subscriptionId: string): Promise<CustomerRow | null> {
   if (!subscriptionId) return null;
   return env.DB.prepare(`SELECT * FROM customers WHERE stripe_subscription_id = ?`).bind(subscriptionId).first<CustomerRow>();
 }
 
-export async function findCustomerByEmail(env: Env, email: string): Promise<CustomerRow | null> {
-  if (!email) return null;
-  return env.DB.prepare(`SELECT * FROM customers WHERE email = ? COLLATE NOCASE ORDER BY created_at DESC LIMIT 1`)
-    .bind(email).first<CustomerRow>();
+/**
+ * A CANCELLED customer who is plausibly the person now subscribing again: the
+ * same Stripe customer (Stripe's own resubscribe shape), or failing that the
+ * same email under a fresh Stripe customer (Checkout mints one per session).
+ * Active rows are never candidates — an active subscription is somebody's
+ * working key, and a new purchase is a new customer, not a claim on it. The
+ * most recently cancelled wins when several qualify, a Stripe-customer match
+ * ahead of an email match.
+ */
+export async function findReactivatableCustomer(env: Env, stripeCustomerId: string, email: string): Promise<CustomerRow | null> {
+  if (!stripeCustomerId && !email) return null;
+  return env.DB.prepare(
+    `SELECT * FROM customers WHERE status = 'cancelled' AND (stripe_customer_id = ? OR email = ? COLLATE NOCASE)` +
+    ` ORDER BY (stripe_customer_id = ?) DESC, cancelled_at DESC, created_at DESC LIMIT 1`,
+  ).bind(stripeCustomerId, email, stripeCustomerId).first<CustomerRow>();
 }
 
 export interface ActivateInput {
@@ -98,15 +121,18 @@ export interface ActivateResult {
 /**
  * Provisions (or reactivates) a customer after a paid checkout.
  *
- * Idempotent on Stripe's ids and on the email, in that order:
- *   - the same subscription again is a webhook retry → return the row as-is;
- *   - the same Stripe customer, or the same email, with a new subscription is
- *     someone coming back after cancelling → reactivate the SAME row: the key
- *     they already pasted into their client keeps working and their memories
- *     are still there. (users.email is UNIQUE, so a second users row for the
- *     same address is not an option anyway.)
+ * Keyed by the subscription, in this order:
+ *   - the same subscription again is a webhook retry → return the row as-is
+ *     (idx_customers_stripe_subscription makes this hold even when two
+ *     deliveries race: the loser's INSERT fails, Stripe retries, this hits);
+ *   - a new subscription from a CANCELLED customer — same Stripe customer, or
+ *     same email — is someone coming back → reactivate that row under the new
+ *     subscription: the key they already pasted into their client works again
+ *     and their memories are still there;
  *   - otherwise mint a key and create the user + workspace + membership +
  *     customer in one D1 batch, so a half-provisioned customer cannot exist.
+ *     An ACTIVE row under the same email or Stripe customer is deliberately
+ *     not consulted: a second live subscription is a second, isolated customer.
  */
 export async function activateCustomer(env: Env, input: ActivateInput): Promise<ActivateResult> {
   const email = input.email.trim().toLowerCase();
@@ -115,16 +141,15 @@ export async function activateCustomer(env: Env, input: ActivateInput): Promise<
   const bySubscription = await findCustomerBySubscription(env, input.stripeSubscriptionId);
   if (bySubscription) return { customer: bySubscription, created: false, reactivated: false };
 
-  const existing = (await findCustomerByStripeCustomer(env, input.stripeCustomerId))
-    ?? (await findCustomerByEmail(env, email));
-  if (existing) {
+  const returning = await findReactivatableCustomer(env, input.stripeCustomerId, email);
+  if (returning) {
     await env.DB.batch([
       env.DB.prepare(
         `UPDATE customers SET status = 'active', cancelled_at = NULL, plan = ?, stripe_customer_id = ?, stripe_subscription_id = ?, email = ? WHERE id = ?`,
-      ).bind(input.plan, input.stripeCustomerId, input.stripeSubscriptionId, email, existing.id),
-      env.DB.prepare(`UPDATE users SET suspended = 0, email = ? WHERE id = ?`).bind(email, existing.id),
+      ).bind(input.plan, input.stripeCustomerId, input.stripeSubscriptionId, email, returning.id),
+      env.DB.prepare(`UPDATE users SET suspended = 0 WHERE id = ?`).bind(returning.id),
     ]);
-    const customer = (await findCustomerById(env, existing.id))!;
+    const customer = (await findCustomerById(env, returning.id))!;
     return { customer, created: false, reactivated: true };
   }
 
@@ -135,9 +160,10 @@ export async function activateCustomer(env: Env, input: ActivateInput): Promise<
   const name = email.split("@")[0] || "Customer";
 
   await env.DB.batch([
+    // email NULL, not the address — see the header. customers.email carries it.
     env.DB.prepare(
-      `INSERT INTO users (id, name, email, role, token_hash, suspended, created_at) VALUES (?, ?, ?, 'member', ?, 0, ?)`,
-    ).bind(id, name, email, tokenHash, now),
+      `INSERT INTO users (id, name, email, role, token_hash, suspended, created_at) VALUES (?, ?, NULL, 'member', ?, 0, ?)`,
+    ).bind(id, name, tokenHash, now),
     env.DB.prepare(`INSERT INTO workspaces (id, kind, name, created_at) VALUES (?, 'personal', ?, ?)`).bind(workspaceId, name, now),
     env.DB.prepare(`INSERT INTO memberships (user_id, workspace_id, created_at) VALUES (?, ?, ?)`).bind(id, workspaceId, now),
     env.DB.prepare(
@@ -161,6 +187,9 @@ export async function activateCustomer(env: Env, input: ActivateInput): Promise<
  * users row suspended, which is the flag identity resolution already refuses on
  * (src/lib/identity.ts: `suspended = 0`), so the key stops working on the next
  * request. Memories are kept: a customer who resubscribes gets them back.
+ *
+ * Takes the row, not an email or Stripe customer id: the caller resolved it by
+ * subscription, and this touches that one row's user and nothing else.
  */
 export async function cancelCustomer(env: Env, customer: CustomerRow): Promise<void> {
   const now = Date.now();

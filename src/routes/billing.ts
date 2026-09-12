@@ -1,7 +1,7 @@
 import type { Env } from "../env";
 import { json } from "../lib/http";
 import {
-  activateCustomer, cancelCustomer, connectorUrl, findCustomerByStripeCustomer, findCustomerBySubscription,
+  activateCustomer, cancelCustomer, connectorUrl, findCustomerBySubscription,
   isPlan, markActivationEmailSent, type Plan,
 } from "../billing/customers";
 import { sendActivationEmail } from "../billing/email";
@@ -138,10 +138,14 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
       const email = (session.customer_details?.email || session.customer_email || "").trim();
       const stripeCustomerId = typeof session.customer === "string" ? session.customer : "";
       const subscriptionId = typeof session.subscription === "string" ? session.subscription : "";
-      if (!email || !stripeCustomerId) {
+      if (!email || !stripeCustomerId || !subscriptionId) {
         // A retry cannot add what Stripe did not send; answer 200 so it stops, and log loudly.
-        console.error("checkout.session.completed without email/customer", { id: session.id, email: !!email, customer: !!stripeCustomerId });
-        return json({ received: true, ignored: "missing customer email or id" });
+        // The subscription id is the customer's identity (src/billing/customers.ts), so a
+        // session without one cannot be provisioned — nothing could ever revoke it.
+        console.error("checkout.session.completed without email/customer/subscription", {
+          id: session.id, email: !!email, customer: !!stripeCustomerId, subscription: !!subscriptionId,
+        });
+        return json({ received: true, ignored: "missing customer email, customer id or subscription id" });
       }
 
       const plan = await resolvePlan(env, session);
@@ -169,11 +173,16 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
 
     case "customer.subscription.deleted": {
       const sub = object as Subscription;
-      const customer = (await findCustomerBySubscription(env, sub.id))
-        ?? (await findCustomerByStripeCustomer(env, typeof sub.customer === "string" ? sub.customer : ""));
-      if (!customer) return json({ received: true, ignored: "no matching customer" });
+      // By subscription id ONLY. A Stripe customer, and an email, can each own
+      // more than one subscription; falling back to either would revoke a key
+      // that belongs to a different, still-paid subscription.
+      const customer = await findCustomerBySubscription(env, typeof sub.id === "string" ? sub.id : "");
+      if (!customer) {
+        console.warn("customer.subscription.deleted for a subscription we never provisioned", { subscription: sub.id, customer: sub.customer });
+        return json({ received: true, ignored: "no matching customer" });
+      }
       if (customer.status !== "cancelled") await cancelCustomer(env, customer);
-      console.log("quantum-brain customer cancelled", { id: customer.id });
+      console.log("quantum-brain customer cancelled", { id: customer.id, subscription: sub.id });
       return json({ received: true, customerId: customer.id, cancelled: true });
     }
 

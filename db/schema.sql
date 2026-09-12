@@ -218,17 +218,19 @@ CREATE TABLE IF NOT EXISTS maintenance_cursor (
 INSERT INTO maintenance_cursor (id, workspace_id, advanced_at) VALUES (1, '', 0)
   ON CONFLICT DO NOTHING;
 
--- Quantum Brain billing (Phase D). One row per paying customer. `id` is the
+-- Quantum Brain billing (Phase D). One row per paying SUBSCRIPTION. `id` is the
 -- customer's users.id: a customer authenticates exactly like a team member
 -- (users.token_hash = SHA-256 of api_key) and owns one personal workspace, so
 -- the existing workspace scoping isolates their data. api_key is kept in the
 -- clear here — and only here — so a lost key can be resent to its owner.
+-- The users row for a customer carries email NULL: users.email is UNIQUE, and
+-- one address may hold several subscriptions (src/billing/customers.ts).
 CREATE TABLE IF NOT EXISTS customers (
   id                     TEXT PRIMARY KEY,               -- = users.id; the customer id in /mcp/<id>
   api_key                TEXT NOT NULL,                  -- qb_ + 32 alphanumerics
-  email                  TEXT NOT NULL,
+  email                  TEXT NOT NULL,                  -- for correspondence and for recognising a cancelled customer who returns; NOT an identity
   stripe_customer_id     TEXT NOT NULL,
-  stripe_subscription_id TEXT NOT NULL DEFAULT '',
+  stripe_subscription_id TEXT NOT NULL DEFAULT '',       -- THE identity: provisioned and revoked by this id alone
   plan                   TEXT NOT NULL DEFAULT 'monthly', -- monthly | yearly
   status                 TEXT NOT NULL DEFAULT 'active',  -- active | cancelled
   created_at             INTEGER NOT NULL,
@@ -236,7 +238,20 @@ CREATE TABLE IF NOT EXISTS customers (
   email_sent_at          INTEGER                         -- activation email delivered (NULL = owed; a webhook retry resends)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_api_key ON customers(api_key);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_stripe_customer ON customers(stripe_customer_id);
+-- A Stripe customer may own several subscriptions (Checkout mints a customer
+-- per session, but the billing portal and Payment Links reuse one), so this is
+-- a plain lookup index. Phase D as first shipped had it UNIQUE, which is what
+-- forced two purchases by one person onto one key; src/db/init.ts rebuilds it
+-- on an existing brain's next cold start.
+CREATE INDEX IF NOT EXISTS idx_customers_stripe_customer ON customers(stripe_customer_id);
+-- The subscription is the identity, so it is UNIQUE: two rows for one
+-- subscription would be two keys with one cancellation between them, and the
+-- index is what makes a racing pair of webhook deliveries collapse to one row.
+-- Partial because '' is the column default on rows that never carried an id.
+-- Fresh installs only: an EXISTING brain gets it from src/db/init.ts, which
+-- resolves any duplicates it finds before building — the same shape as
+-- idx_users_email above.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_stripe_subscription ON customers(stripe_subscription_id) WHERE stripe_subscription_id != '';
 CREATE INDEX IF NOT EXISTS idx_customers_email ON customers(email);
 
 -- Capsule-only index: missing project ids never scan ordinary memories.

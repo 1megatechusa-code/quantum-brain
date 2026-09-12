@@ -135,10 +135,24 @@ const SCHEMA_OBJECTS: Record<string, string> = {
   // predicate anywhere. Additive: a self-hosted brain never writes here.
   customers: `CREATE TABLE IF NOT EXISTS customers (id TEXT PRIMARY KEY, api_key TEXT NOT NULL, email TEXT NOT NULL, stripe_customer_id TEXT NOT NULL, stripe_subscription_id TEXT NOT NULL DEFAULT '', plan TEXT NOT NULL DEFAULT 'monthly', status TEXT NOT NULL DEFAULT 'active', created_at INTEGER NOT NULL, cancelled_at INTEGER, email_sent_at INTEGER)`,
   idx_customers_api_key: `CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_api_key ON customers(api_key)`,
-  // Webhooks arrive keyed by Stripe's ids, and both lookups have to be exact.
-  idx_customers_stripe_customer: `CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_stripe_customer ON customers(stripe_customer_id)`,
+  // A plain lookup index: one Stripe customer may hold several subscriptions,
+  // and each is its own row. Phase D as first shipped had this UNIQUE (the
+  // constraint that forced two purchases by one person onto one key), so it is
+  // in REDEFINED_INDEXES below and an existing brain gets it rebuilt. The
+  // subscription index — the UNIQUE one — is SUBSCRIPTION_UNIQUE_INDEX_DDL,
+  // built with a repair path like the email index rather than listed here.
+  idx_customers_stripe_customer: `CREATE INDEX IF NOT EXISTS idx_customers_stripe_customer ON customers(stripe_customer_id)`,
   idx_customers_email: `CREATE INDEX IF NOT EXISTS idx_customers_email ON customers(email)`,
 };
+
+/**
+ * Objects in SCHEMA_OBJECTS whose DDL changed after they shipped. The probe
+ * skips an object by name and kind, so a brain carrying the OLD definition
+ * would otherwise keep it forever; for these, the stored definition is compared
+ * (see normalizeDdl) and a differing one is dropped and rebuilt. Indexes only:
+ * dropping and recreating an index loses nothing, which is not true of tables.
+ */
+const REDEFINED_INDEXES: ReadonlySet<string> = new Set(["idx_customers_stripe_customer"]);
 
 /**
  * Columns added to `entries` after the table shipped, keyed by column name. They arrived
@@ -366,6 +380,16 @@ async function probeSchema(env: Env): Promise<ExistingSchema | null> {
 }
 
 /**
+ * sqlite_master stores DDL without IF NOT EXISTS and with the author's
+ * whitespace. Comparing token streams detects a changed definition and ignores
+ * a cosmetic one; string literals keep their inner whitespace, which is
+ * significant in SQL.
+ */
+const normalizeDdl = (sql: string): string => sql
+  .replace(/^(CREATE (?:UNIQUE )?(?:INDEX|TRIGGER)) IF NOT EXISTS\s+/i, "$1 ")
+  .match(/'(?:''|[^'])*'|"(?:""|[^"])*"|[a-zA-Z_]\w*|\d+|[^\s]/g)?.join(" ") ?? "";
+
+/**
  * users.email is UNIQUE. The constraint cannot ship as an ordinary SCHEMA_OBJECTS
  * entry: on a brain that already holds two members with the same email — the
  * check-then-INSERT race this index closes — the CREATE itself would throw,
@@ -383,6 +407,28 @@ const EMAIL_DEDUPLICATE_SQL =
   `  SELECT id FROM (` +
   `    SELECT id, ROW_NUMBER() OVER (PARTITION BY email ORDER BY created_at ASC, id ASC) AS rn` +
   `      FROM users WHERE email IS NOT NULL` +
+  `  ) WHERE rn > 1` +
+  `)`;
+
+/**
+ * customers.stripe_subscription_id is UNIQUE where set: the subscription IS the
+ * customer's identity (src/billing/customers.ts), and two rows for one
+ * subscription would be two keys with one cancellation between them. Same
+ * repair shape as the email index, for the same reason — a brain that
+ * provisioned twice for one subscription (a racing pair of webhook deliveries
+ * under the release before this index) must not be bricked by the build. The
+ * NEWEST row keeps the id: it is the one the last checkout handed a key for;
+ * the older duplicate keeps its key and memories but no longer answers to the
+ * subscription, so a cancellation lands on one row.
+ */
+const SUBSCRIPTION_UNIQUE_INDEX_DDL =
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_stripe_subscription ON customers(stripe_subscription_id) WHERE stripe_subscription_id != ''`;
+const SUBSCRIPTION_DEDUPLICATE_SQL =
+  `UPDATE customers SET stripe_subscription_id = '' ` +
+  `WHERE id IN (` +
+  `  SELECT id FROM (` +
+  `    SELECT id, ROW_NUMBER() OVER (PARTITION BY stripe_subscription_id ORDER BY created_at DESC, id DESC) AS rn` +
+  `      FROM customers WHERE stripe_subscription_id != ''` +
   `  ) WHERE rn > 1` +
   `)`;
 
@@ -407,6 +453,21 @@ function isUniqueViolation(e: unknown): boolean {
   return /UNIQUE constraint failed/i.test(String((e as { message?: string })?.message ?? e));
 }
 
+/**
+ * Builds a UNIQUE index that an earlier release may have let duplicates through
+ * for. The build is attempted first; only a UNIQUE violation runs the repair,
+ * and the second build after it rejects like any other DDL failure.
+ */
+async function ensureUniqueIndex(env: Env, ddl: string, dedupeSql: string): Promise<void> {
+  try {
+    await env.DB.exec(ddl);
+  } catch (e) {
+    if (!isUniqueViolation(e)) throw e;
+    await env.DB.exec(dedupeSql);
+    await env.DB.exec(ddl);
+  }
+}
+
 // Rejects on any genuine failure. Nothing here may swallow errors: a resolved promise is
 // the signal initializeDatabase memoises, so swallowing would cache a schema that was
 // never applied. The installer creates the D1 database moments before the first request
@@ -423,7 +484,16 @@ async function applySchema(env: Env): Promise<void> {
     // Kind as well as name: if something else has taken the name, this is not the object
     // we need and the CREATE has to be issued so SQLite raises the collision, which is
     // what it did before the probe existed.
-    if (existing?.objects.get(name) === kindOf(ddl)) continue;
+    if (existing?.objects.get(name) === kindOf(ddl)) {
+      // Present under the right name, but is it today's definition? Only asked
+      // of REDEFINED_INDEXES, and only when the probe returned a definition to
+      // ask it of — an absent one is "unknown", not "different".
+      const stored = REDEFINED_INDEXES.has(name) ? existing.definitions.get(name) : undefined;
+      if (stored !== undefined && normalizeDdl(stored) !== normalizeDdl(ddl)) {
+        await env.DB.batch([env.DB.prepare(`DROP INDEX IF EXISTS ${name}`), env.DB.prepare(ddl)]);
+      }
+      continue;
+    }
     await env.DB.exec(ddl);
   }
   for (const [column, ddl] of Object.entries(ENTRIES_COLUMNS)) {
@@ -462,24 +532,21 @@ async function applySchema(env: Env): Promise<void> {
   // this is not a plain SCHEMA_OBJECTS entry. Skipped once the index exists,
   // which the probe reports like any other index.
   if (existing?.objects.get("idx_users_email") !== "index") {
-    try {
-      await env.DB.exec(EMAIL_UNIQUE_INDEX_DDL);
-    } catch (e) {
-      if (!isUniqueViolation(e)) throw e;
-      // The build tripped over duplicates a legacy brain accumulated through
-      // the app-level check-then-INSERT gap. Resolve them, then build again;
-      // a second failure here is a real fault and still rejects.
-      await env.DB.exec(EMAIL_DEDUPLICATE_SQL);
-      await env.DB.exec(EMAIL_UNIQUE_INDEX_DDL);
-    }
+    // A failed build means duplicates a legacy brain accumulated through the
+    // app-level check-then-INSERT gap; ensureUniqueIndex resolves them and
+    // builds again, and a second failure is a real fault that still rejects.
+    await ensureUniqueIndex(env, EMAIL_UNIQUE_INDEX_DDL, EMAIL_DEDUPLICATE_SQL);
+  }
+  // customers.stripe_subscription_id uniqueness — same shape, see the note
+  // above SUBSCRIPTION_UNIQUE_INDEX_DDL. After SCHEMA_OBJECTS, which creates
+  // the table on a brain that never had one.
+  if (existing?.objects.get("idx_customers_stripe_subscription") !== "index") {
+    await ensureUniqueIndex(env, SUBSCRIPTION_UNIQUE_INDEX_DDL, SUBSCRIPTION_DEDUPLICATE_SQL);
   }
   for (const [name, ddl] of Object.entries(POST_COLUMN_OBJECTS)) {
     if (name === "idx_entries_capsule" && (existing === null || existing.objects.has(name))) {
       // 強制利用する専用indexは、同名でも定義が異なれば修復する。
-      const normalize = (sql: string) => sql
-        .replace(/^CREATE INDEX IF NOT EXISTS\s+/i, "CREATE INDEX ")
-        .match(/'(?:''|[^'])*'|"(?:""|[^"])*"|[a-zA-Z_]\w*|\d+|[^\s]/g)?.join(" ") ?? "";
-      if (normalize(existing?.definitions.get(name) ?? "") !== normalize(ddl)) {
+      if (normalizeDdl(existing?.definitions.get(name) ?? "") !== normalizeDdl(ddl)) {
         await env.DB.batch([
           env.DB.prepare(`DROP INDEX IF EXISTS ${name}`),
           env.DB.prepare(ddl),
@@ -492,11 +559,7 @@ async function applySchema(env: Env): Promise<void> {
       || existing.objects.get("prompt_capsule_revisions") === "table")) {
       // sqlite_master removes IF NOT EXISTS. Compare bodies so a deployed
       // trigger can be repaired on the next cold start, not frozen forever.
-      const normalize = (sql: string) => sql
-        .replace(/^CREATE TRIGGER IF NOT EXISTS\s+/i, "CREATE TRIGGER ")
-        // SQL文字列の空白は意味を持つため、その内部は正規化しない。
-        .match(/'(?:''|[^'])*'|"(?:""|[^"])*"|[a-zA-Z_]\w*|\d+|[^\s]/g)?.join(" ") ?? "";
-      if (normalize(existing?.definitions.get(name) ?? "") !== normalize(ddl)) {
+      if (normalizeDdl(existing?.definitions.get(name) ?? "") !== normalizeDdl(ddl)) {
         await env.DB.batch([
           env.DB.prepare(`DROP TRIGGER IF EXISTS ${name}`),
           env.DB.prepare(ddl),

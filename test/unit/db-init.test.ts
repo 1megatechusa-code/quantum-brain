@@ -46,7 +46,7 @@ const ALL_OBJECTS = ["entries", "idx_entries_created_at", "idx_entries_source", 
   "memberships", "idx_memberships_workspace", "entry_events", "idx_entry_events_entry", "idx_entry_events_created",
   "admin_events", "idx_admin_events_created", "maintenance_cursor",
   // Quantum Brain billing (Phase D).
-  "customers", "idx_customers_api_key", "idx_customers_stripe_customer", "idx_customers_email",
+  "customers", "idx_customers_api_key", "idx_customers_stripe_customer", "idx_customers_stripe_subscription", "idx_customers_email",
   "idx_entries_workspace_created", "idx_entries_capsule",
   ...PROMPT_CAPSULE_TRIGGERS];
 // Columns in the base CREATE of entries since v3 — present on every brain init touches.
@@ -215,7 +215,10 @@ describe("initializeDatabase updated_at migration", () => {
       // MOVED 37 -> 42 by the Prompt Capsule revision table and its four
       // triggers, which make invalidation atomic with entry writes.
       // MOVED 43 -> 47 by the Quantum Brain customers table and its three indexes.
-      expect(migrated).toBe(47); // 26 base objects + 14 ALTERs + 5 post-column objects + the email-index CREATE
+      // MOVED 47 -> 48 by idx_customers_stripe_subscription, built like the
+      // email index: one CREATE, and the dedupe behind it never runs on a
+      // fresh brain.
+      expect(migrated).toBe(48); // 26 base objects + 14 ALTERs + 5 post-column objects + the two tolerant unique-index CREATEs
       expect(execd.length + prepared.length).toBe(migrated + 3); // three probes total
       expect(prepared).toHaveLength(7); // three probes plus four prepared trigger DDLs
       expect(touchesEntries(execd)).toEqual([]);
@@ -532,7 +535,8 @@ describe("initializeDatabase against real SQLite", () => {
     // MOVED 36 -> 38 by idx_memberships_workspace and idx_users_email.
     // MOVED 38 -> 43 by the Prompt Capsule revision table and its four triggers.
     // MOVED 44 -> 48 by the Quantum Brain customers table and its three indexes.
-    expect(cold).toBe(48); // one probe, then the 47 statements a new brain needs
+    // MOVED 48 -> 49 by idx_customers_stripe_subscription.
+    expect(cold).toBe(49); // one probe, then the 48 statements a new brain needs
     expect(d1.issued).toHaveLength(1);
     expect(d1.issued[0]).toMatch(PROBE);
   });
@@ -797,5 +801,88 @@ describe("initializeDatabase against real SQLite", () => {
 
     await expect(Promise.all([first, second])).resolves.toBeDefined();
     expect(sameColumns(d1.columns())).toBe(true);
+  });
+
+  describe("re-keys a customers table provisioned before per-subscription identity", () => {
+    // Phase D as first shipped keyed customers by Stripe customer (UNIQUE) and
+    // stored nothing unique about the subscription. Identity moved to the
+    // subscription (src/billing/customers.ts): one Stripe customer, or one
+    // email, may now own several rows, and one subscription may own exactly
+    // one. Both are index changes that have to reach EXISTING brains — the
+    // probe skips an index by name, so the rebuilt definition needs its own
+    // path, and the new UNIQUE index has to survive duplicates a racing pair of
+    // webhook deliveries could have left behind.
+    const LEGACY_CUSTOMERS = [
+      `CREATE TABLE customers (id TEXT PRIMARY KEY, api_key TEXT NOT NULL, email TEXT NOT NULL, stripe_customer_id TEXT NOT NULL, stripe_subscription_id TEXT NOT NULL DEFAULT '', plan TEXT NOT NULL DEFAULT 'monthly', status TEXT NOT NULL DEFAULT 'active', created_at INTEGER NOT NULL, cancelled_at INTEGER, email_sent_at INTEGER)`,
+      `CREATE UNIQUE INDEX idx_customers_api_key ON customers(api_key)`,
+      `CREATE UNIQUE INDEX idx_customers_stripe_customer ON customers(stripe_customer_id)`,
+      `CREATE INDEX idx_customers_email ON customers(email)`,
+    ];
+    const insert = (sqlite: SqliteD1, id: string, cus: string, sub: string, createdAt: number) => sqlite.db
+      .prepare(`INSERT INTO customers (id, api_key, email, stripe_customer_id, stripe_subscription_id, plan, status, created_at) VALUES (?, ?, 'x@example.com', ?, ?, 'monthly', 'active', ?)`)
+      .bind(id, `qb_${id.padEnd(32, "0")}`, cus, sub, createdAt).run();
+    const indexes = async (sqlite: SqliteD1) => Object.fromEntries(((await sqlite.db
+      .prepare(`SELECT name, "unique" AS isUnique, partial FROM pragma_index_list('customers')`)
+      .all()).results as { name: string; isUnique: number; partial: number }[]).map(i => [i.name, { unique: i.isUnique, partial: i.partial }]));
+
+    it("rebuilds the Stripe-customer index without UNIQUE and adds the UNIQUE subscription index, keeping every row", async () => {
+      d1 = makeSqliteD1({ schema: false });
+      for (const ddl of LEGACY_CUSTOMERS) await d1.db.exec(ddl);
+      await insert(d1, "qb-1", "cus_1", "sub_1", 1000);
+      await insert(d1, "qb-2", "cus_2", "", 2000); // never carried a subscription id
+      await insert(d1, "qb-3", "cus_3", "", 3000); // …and a second such row: '' must not collide
+      d1.issued.length = 0;
+
+      await initializeDatabase(envFor(d1));
+
+      expect(await indexes(d1)).toMatchObject({
+        idx_customers_stripe_customer: { unique: 0 },
+        idx_customers_stripe_subscription: { unique: 1, partial: 1 },
+      });
+      // An index migration is not a data migration.
+      const { results } = await d1.db.prepare(`SELECT id, stripe_customer_id, stripe_subscription_id FROM customers ORDER BY created_at`).all();
+      expect(results).toEqual([
+        { id: "qb-1", stripe_customer_id: "cus_1", stripe_subscription_id: "sub_1" },
+        { id: "qb-2", stripe_customer_id: "cus_2", stripe_subscription_id: "" },
+        { id: "qb-3", stripe_customer_id: "cus_3", stripe_subscription_id: "" },
+      ]);
+      // The two facts the new keying rests on, stated as constraints: a second
+      // subscription under one Stripe customer is allowed, a second row for one
+      // subscription is not.
+      await expect(insert(d1, "qb-4", "cus_1", "sub_4", 4000)).resolves.toBeDefined();
+      await expect(insert(d1, "qb-5", "cus_5", "sub_1", 5000)).rejects.toThrow(/UNIQUE constraint failed/);
+
+      // Repaired once. The next cold start sees today's definition and issues
+      // nothing but the probe.
+      resetDatabaseInit();
+      d1.issued.length = 0;
+      await initializeDatabase(envFor(d1));
+      expect(d1.issued).toEqual([expect.stringMatching(PROBE)]);
+    });
+
+    it("resolves duplicate subscription rows before building the UNIQUE index rather than failing init", async () => {
+      // The release before this index had only an app-level "seen this
+      // subscription?" check, so two deliveries of one checkout event racing
+      // each other could provision twice. The build must not brick such a brain
+      // (initializeDatabase would never memoise and every request would fail);
+      // the newest row — the one the last checkout emailed a key for — keeps
+      // the subscription, and the older keeps its key and memories but no
+      // longer answers to it.
+      d1 = makeSqliteD1({ schema: false });
+      for (const ddl of LEGACY_CUSTOMERS) await d1.db.exec(ddl);
+      await insert(d1, "qb-old", "cus_old", "sub_dup", 1000);
+      await insert(d1, "qb-new", "cus_new", "sub_dup", 2000);
+      await insert(d1, "qb-other", "cus_other", "sub_other", 3000);
+
+      await expect(initializeDatabase(envFor(d1))).resolves.toBeUndefined();
+
+      expect((await indexes(d1)).idx_customers_stripe_subscription).toMatchObject({ unique: 1 });
+      const { results } = await d1.db.prepare(`SELECT id, stripe_subscription_id FROM customers ORDER BY created_at`).all();
+      expect(results).toEqual([
+        { id: "qb-old", stripe_subscription_id: "" },
+        { id: "qb-new", stripe_subscription_id: "sub_dup" },
+        { id: "qb-other", stripe_subscription_id: "sub_other" },
+      ]);
+    });
   });
 });

@@ -6,6 +6,11 @@
  * sees only their own rows → Stripe says they cancelled → the key stops working
  * → they come back → the same key works again with their memories intact.
  *
+ * And the identity rule underneath it: a customer IS a Stripe subscription.
+ * The same email buying twice is two customers with two keys, cancelling one
+ * of them touches only its own key, and coming back after cancelling revives
+ * the cancelled one — never a live sibling.
+ *
  * Stripe and Resend are reached over `fetch`, which is stubbed here and records
  * what was sent; nothing in this file talks to the network.
  */
@@ -164,9 +169,11 @@ describe("checkout.session.completed → a working, isolated customer", () => {
     expect(row.api_key).toMatch(API_KEY_PATTERN);
     expect(row.email_sent_at).toBeGreaterThan(0);
 
-    // The users row carries only the hash, exactly like a team member's token.
+    // The users row carries only the hash, exactly like a team member's token —
+    // and no email: users.email is UNIQUE and one address may hold several
+    // subscriptions, so the address lives on the customers row alone.
     const user = await sqlite.db.prepare(`SELECT * FROM users WHERE id = ?`).bind(row.id).first() as any;
-    expect(user).toMatchObject({ email: "buyer@example.com", role: "member", suspended: 0 });
+    expect(user).toMatchObject({ email: null, role: "member", suspended: 0 });
     expect(user.token_hash).not.toContain(row.api_key);
     // One personal workspace, and no company membership: nothing shared leaks in.
     const memberships = (await sqlite.db.prepare(
@@ -182,6 +189,14 @@ describe("checkout.session.completed → a working, isolated customer", () => {
     expect(email.text).toContain(row.api_key);
     expect(email.html).toContain(row.api_key);
     expect(email.text).toContain("Yearly ($25/year)");
+  });
+
+  it("refuses to provision a session that names no subscription: nothing could ever revoke it", async () => {
+    const res = await webhook(checkoutCompleted({ subscription: "" }));
+    expect(res.status).toBe(200); // a retry cannot add what Stripe did not send
+    expect(await res.json()).toMatchObject({ received: true, ignored: expect.stringContaining("subscription id") });
+    expect((await customerRows())).toHaveLength(0);
+    expect(emailsSent()).toHaveLength(0);
   });
 
   it("falls back to the subscription's price when the session carries no plan metadata (Payment Links)", async () => {
@@ -304,12 +319,143 @@ describe("customer.subscription.deleted → revoked, and resubscribing restores"
   });
 
   it("reactivates by email when the same person returns as a new Stripe customer", async () => {
+    // Checkout mints a Stripe customer per session, so this — not a reused
+    // cus_ id — is what a real return looks like. The match is allowed ONLY
+    // because the row is cancelled; see the suite below for the live case.
     await webhook(checkoutCompleted({ email: "Same@Example.com", customer: "cus_old", subscription: "sub_old" }));
+    const [original] = (await customerRows());
     await webhook(subscriptionDeleted("sub_old", "cus_old"));
     const res = await webhook(checkoutCompleted({ email: "same@example.com", customer: "cus_new", subscription: "sub_new" }));
-    expect(await res.json()).toMatchObject({ created: false });
+    expect(await res.json()).toMatchObject({ created: false, emailed: true, customerId: original.id });
     expect((await customerRows())).toHaveLength(1);
-    expect((await customerRows())[0]).toMatchObject({ stripe_customer_id: "cus_new", stripe_subscription_id: "sub_new", status: "active" });
+    expect((await customerRows())[0]).toMatchObject({ api_key: original.api_key, stripe_customer_id: "cus_new", stripe_subscription_id: "sub_new", status: "active" });
+    expect((await call("GET", "/list", original.api_key)).status).toBe(200);
+  });
+});
+
+describe("a customer is a subscription — the same email twice is two customers", () => {
+  // The bug this pins: two purchases under one address used to collapse onto
+  // one row, both activation emails carried the same URL and key, and
+  // cancelling the second purchase revoked the first.
+  const SAME = "twice@example.com";
+  const first = () => checkoutCompleted({ email: SAME, customer: "cus_A", subscription: "sub_A1" });
+  const second = () => checkoutCompleted({ email: SAME, customer: "cus_B", subscription: "sub_B1", plan: "yearly" });
+
+  it("two purchases with one email are two isolated customers with their own keys and connector URLs", async () => {
+    expect(await (await webhook(first())).json()).toMatchObject({ created: true, emailed: true });
+    expect(await (await webhook(second())).json()).toMatchObject({ created: true, emailed: true });
+
+    const rows = await customerRows();
+    expect(rows).toHaveLength(2);
+    const [a, b] = rows;
+    expect(a.id).not.toBe(b.id);
+    expect(a.api_key).not.toBe(b.api_key);
+    expect(a).toMatchObject({ email: SAME, stripe_customer_id: "cus_A", stripe_subscription_id: "sub_A1", plan: "monthly", status: "active" });
+    expect(b).toMatchObject({ email: SAME, stripe_customer_id: "cus_B", stripe_subscription_id: "sub_B1", plan: "yearly", status: "active" });
+
+    // Each activation email carries ITS customer's URL and key, not the other's.
+    const [mailA, mailB] = emailsSent();
+    expect(mailA.text).toContain(`/mcp/${a.id}`);
+    expect(mailA.text).toContain(a.api_key);
+    expect(mailA.text).not.toContain(b.api_key);
+    expect(mailB.text).toContain(`/mcp/${b.id}`);
+    expect(mailB.text).toContain(b.api_key);
+    expect(mailB.text).not.toContain(a.api_key);
+
+    // Two users rows, two personal workspaces, and neither key opens the other's door.
+    expect((await sqlite.db.prepare(`SELECT COUNT(*) AS n FROM users WHERE id IN (?, ?)`).bind(a.id, b.id).first())).toMatchObject({ n: 2 });
+    expect((await mcp(`/mcp/${a.id}`, a.api_key)).status).toBe(200);
+    expect((await mcp(`/mcp/${b.id}`, b.api_key)).status).toBe(200);
+    expect((await mcp(`/mcp/${a.id}`, b.api_key)).status).toBe(401);
+    expect((await mcp(`/mcp/${b.id}`, a.api_key)).status).toBe(401);
+
+    await call("POST", "/capture", a.api_key, { content: "first brain: alpha" });
+    await call("POST", "/capture", b.api_key, { content: "second brain: beta" });
+    const aList = (await (await call("GET", "/list?n=50", a.api_key)).json() as any[]).map((e) => e.content);
+    const bList = (await (await call("GET", "/list?n=50", b.api_key)).json() as any[]).map((e) => e.content);
+    expect(aList).toEqual(["first brain: alpha"]);
+    expect(bList).toEqual(["second brain: beta"]);
+  });
+
+  it("cancelling one subscription revokes only its key; the other keeps working", async () => {
+    await webhook(first());
+    await webhook(second());
+    const [a, b] = await customerRows();
+
+    const res = await webhook(subscriptionDeleted("sub_B1", "cus_B"));
+    expect(await res.json()).toMatchObject({ cancelled: true, customerId: b.id });
+
+    const [aAfter, bAfter] = await customerRows();
+    expect(bAfter).toMatchObject({ status: "cancelled", stripe_subscription_id: "sub_B1" });
+    expect(aAfter).toMatchObject({ status: "active", cancelled_at: null, stripe_subscription_id: "sub_A1", api_key: a.api_key });
+
+    const refused = await call("GET", "/list", b.api_key);
+    expect(refused.status).toBe(401);
+    expect(await refused.json()).toMatchObject({ code: "suspended" });
+    expect((await mcp(`/mcp/${b.id}`, b.api_key)).status).toBe(401);
+
+    expect((await call("GET", "/list", a.api_key)).status).toBe(200);
+    expect((await mcp(`/mcp/${a.id}`, a.api_key)).status).toBe(200);
+  });
+
+  it("a second subscription under the SAME Stripe customer is also its own customer", async () => {
+    // The billing portal and Payment Links reuse a Stripe customer, so the
+    // cus_ id is no more an identity than the email is.
+    await webhook(checkoutCompleted({ email: SAME, customer: "cus_A", subscription: "sub_A1" }));
+    await webhook(checkoutCompleted({ email: SAME, customer: "cus_A", subscription: "sub_A2" }));
+    const rows = await customerRows();
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.stripe_customer_id)).toEqual(["cus_A", "cus_A"]);
+    expect(rows[0].api_key).not.toBe(rows[1].api_key);
+
+    await webhook(subscriptionDeleted("sub_A1", "cus_A"));
+    expect((await call("GET", "/list", rows[0].api_key)).status).toBe(401);
+    expect((await call("GET", "/list", rows[1].api_key)).status).toBe(200);
+  });
+
+  it("a cancellation naming a known Stripe customer but an unknown subscription touches nothing", async () => {
+    // The old handler fell back to the Stripe customer here and would have
+    // suspended sub_A1's key. There is no fallback: identity is the subscription.
+    await webhook(first());
+    const [a] = await customerRows();
+    const res = await webhook(subscriptionDeleted("sub_not_ours", "cus_A"));
+    expect(await res.json()).toMatchObject({ received: true, ignored: "no matching customer" });
+    expect((await customerRows())[0]).toMatchObject({ status: "active", cancelled_at: null });
+    expect((await call("GET", "/list", a.api_key)).status).toBe(200);
+  });
+
+  it("cancel, then resubscribe with the same email: the cancelled customer comes back working, and a live sibling is untouched", async () => {
+    await webhook(first());
+    await webhook(second());
+    const [a, b] = await customerRows();
+    await call("POST", "/capture", a.api_key, { content: "before I cancelled" });
+    await webhook(subscriptionDeleted("sub_A1", "cus_A"));
+    expect((await call("GET", "/list", a.api_key)).status).toBe(401);
+
+    // Back again: a fresh Checkout, so a fresh Stripe customer and subscription,
+    // same address. The cancelled row is revived — not B, which is live.
+    const res = await webhook(checkoutCompleted({ email: SAME, customer: "cus_A_again", subscription: "sub_A2" }));
+    expect(await res.json()).toMatchObject({ created: false, emailed: true, customerId: a.id });
+
+    const rows = await customerRows();
+    expect(rows).toHaveLength(2);
+    const aBack = rows.find((r) => r.id === a.id)!;
+    const bStill = rows.find((r) => r.id === b.id)!;
+    expect(aBack).toMatchObject({ api_key: a.api_key, status: "active", cancelled_at: null, stripe_customer_id: "cus_A_again", stripe_subscription_id: "sub_A2" });
+    expect(bStill).toMatchObject({ api_key: b.api_key, status: "active", stripe_subscription_id: "sub_B1" });
+
+    // The revived key works, with the memories from before, and the email resent it.
+    expect((await mcp(`/mcp/${a.id}`, a.api_key)).status).toBe(200);
+    const list = (await (await call("GET", "/list?n=50", a.api_key)).json() as any[]).map((e) => e.content);
+    expect(list).toEqual(["before I cancelled"]);
+    expect(emailsSent()).toHaveLength(3);
+    expect(emailsSent()[2].text).toContain(a.api_key);
+    expect(emailsSent()[2].text).toContain(`/mcp/${a.id}`);
+
+    // And cancelling the NEW subscription revokes the revived key, not B's.
+    await webhook(subscriptionDeleted("sub_A2", "cus_A_again"));
+    expect((await call("GET", "/list", a.api_key)).status).toBe(401);
+    expect((await call("GET", "/list", b.api_key)).status).toBe(200);
   });
 });
 
