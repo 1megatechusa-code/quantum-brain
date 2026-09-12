@@ -26,6 +26,14 @@
 			"binding": "OAUTH_KV","id": "7816750da5aa433dbc8e7a90af416b27"
 		}
 	],
+	// File storage (#8). Bucket must exist before first deploy after this change:
+	// `wrangler r2 bucket create quantum-brain-files` (one-time, real Cloudflare
+	// account action — not something a code change can do for you).
+	"r2_buckets": [
+		{
+			"binding": "FILES","bucket_name": "quantum-brain-files"
+		}
+	],
 	"vars": {
 		"VECTORIZE_GRACE_MS": "300000",
 		// Quantum Brain billing (Phase D). Not secrets: price ids and addresses

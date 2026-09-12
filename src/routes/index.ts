@@ -14,6 +14,7 @@ import { handleConfigRoutes } from "./config";
 import { handleMigrationRoutes } from "./migration";
 import { handleOAuthRevokeRoutes } from "./oauth-revoke";
 import { handleBillingRoutes } from "./billing";
+import { handleFilesRoutes } from "./files";
 
 type RouteHandler = (
   request: Request,
@@ -31,6 +32,7 @@ const routeHandlers: RouteHandler[] = [
   handleRecallRoutes,
   handleEntriesRoutes,
   handleGraphRoutes,
+  handleFilesRoutes,
   handleIntegrationsRoutes,
   handleAdminRoutes,
   handleBriefRoutes,

@@ -62,6 +62,32 @@ export function makeMemoryKV(): KVNamespace {
   } as unknown as KVNamespace;
 }
 
+/** In-memory R2 mock — stateful (unlike makeKVMock) because file-route tests round-trip an upload through get() in the same test. */
+export function makeR2Mock(): R2Bucket {
+  const store = new Map<string, { bytes: Uint8Array; httpMetadata?: R2HTTPMetadata }>();
+  return {
+    put: vi.fn().mockImplementation(async (key: string, value: unknown, options?: { httpMetadata?: R2HTTPMetadata }) => {
+      let bytes: Uint8Array;
+      if (value instanceof Uint8Array) bytes = value;
+      else if (value instanceof ArrayBuffer) bytes = new Uint8Array(value);
+      else bytes = new Uint8Array(0);
+      store.set(key, { bytes, httpMetadata: options?.httpMetadata });
+      return { key } as unknown as R2Object;
+    }),
+    get: vi.fn().mockImplementation(async (key: string) => {
+      const entry = store.get(key);
+      if (!entry) return null;
+      const bytes = entry.bytes;
+      return {
+        body: new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } }),
+        httpMetadata: entry.httpMetadata,
+        size: bytes.length,
+      } as unknown as R2ObjectBody;
+    }),
+    delete: vi.fn().mockImplementation(async (key: string) => { store.delete(key); }),
+  } as unknown as R2Bucket;
+}
+
 export function makeTestEnv(db?: D1Mock, overrides: Partial<Env> = {}): Env {
   return {
     DB: (db ?? new D1Mock()) as unknown as D1Database,
@@ -69,6 +95,7 @@ export function makeTestEnv(db?: D1Mock, overrides: Partial<Env> = {}): Env {
     AI: makeAIMock(),
     AUTH_TOKEN: "test-token",
     OAUTH_KV: makeKVMock(),
+    FILES: makeR2Mock(),
     ...overrides,
   };
 }

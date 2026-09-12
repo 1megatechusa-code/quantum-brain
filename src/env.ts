@@ -33,6 +33,17 @@ export interface Env extends GeneratedEnv {
   EMAIL_REPLY_TO?: string;
   /** Public origin of this Worker, used to build connector and redirect URLs. Plain var. */
   WORKER_BASE_URL?: string;
+
+  // ── File storage (#8) ────────────────────────────────────────────────────
+  /**
+   * Not in GeneratedEnv's omit list: unlike the billing secrets above, an R2
+   * bucket binding IS emitted correctly by `wrangler types` once declared in
+   * wrangler.jsonc, so this only needs a manual type on brains/tests that run
+   * ahead of a fresh `wrangler types` pass. Required, not optional — self-
+   * hosted brains that never call the file routes never touch this binding,
+   * and every test env supplies a mock (see test/helpers/make-env.ts).
+   */
+  FILES: R2Bucket;
 }
 
 // Worker version, echoed by GET /health. The desktop app compares this against

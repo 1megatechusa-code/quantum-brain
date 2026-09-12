@@ -26,6 +26,7 @@ import { renderRecallText, memoryHeader } from "../recall/render";
 import { RECALL_OUTPUT_BUDGET, SNIPPET_MAX_CHARS, snippetOf, truncationNote } from "../recall/snippet";
 import { buildPromptCapsule } from "../prompt-capsule/build";
 import { PROMPT_CAPSULE_MCP_SCHEMA } from "../prompt-capsule/types";
+import { decodeBase64, storeFile, MAX_MCP_FILE_BYTES } from "../files/store";
 
 // Asking the calling model for this is the whole point: it has already read the content
 // in order to decide to store it, so the judgment is free, and it is a far better
@@ -835,6 +836,56 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, identity?: Ident
         })
         .join("\n");
       return { content: [{ type: "text", text }] };
+    }
+  );
+
+  // ── upload_file ──────────────────────────────────────────────────────────
+  server.registerTool(
+    "upload_file",
+    {
+      description:
+        `Store a real file (image, PDF, document — up to ${(MAX_MCP_FILE_BYTES / (1024 * 1024)).toFixed(0)} MB) in this brain, findable later by recall(). `
+        + "The file's bytes live in object storage, not in the memory itself — write a clear summary so recall() can actually find it later; "
+        + `a plain filename is a weak summary. For larger files, use the brain's POST /files HTTP endpoint instead (no size ceiling beyond ${(MAX_MCP_FILE_BYTES / (1024 * 1024)).toFixed(0)} MB here, since a base64 upload has to fit inside this one tool call).`,
+      inputSchema: {
+        content_base64: z.string().describe("The file's bytes, base64-encoded"),
+        filename: z.string().min(1).describe("Original filename, including extension (e.g. 'invoice.pdf')"),
+        mime_type: z.string().min(1).describe("MIME type, e.g. 'application/pdf', 'image/png'"),
+        summary: z.string().optional().describe("What the file is and why it matters — this is what recall() actually searches, not the filename. Falls back to the filename when omitted."),
+        tags: z.array(z.string().max(MAX_INPUT_TAG_CHARS)).max(MAX_INPUT_TAGS).optional().describe("Optional tags for filtering and later retrieval"),
+        workspace: z.enum(["personal", "company"]).optional().describe("Where to store it: your private workspace (default) or the shared company layer"),
+        team: z.string().optional().describe("When workspace is company, which team workspace — id from list_teams. Omit for your primary team."),
+      },
+    },
+    async ({ content_base64, filename, mime_type, summary, tags, workspace, team }) => {
+      let bytes: Uint8Array;
+      try {
+        bytes = decodeBase64(content_base64);
+      } catch {
+        return { content: [{ type: "text", text: "content_base64 is not valid base64." }] };
+      }
+
+      const orgDefault = (await resolveConfig(env)).TEAM_DEFAULT_WORKSPACE;
+      let targetCtx = writeCtx;
+      if (identity) {
+        const resolvedTarget = effectiveWriteTarget(identity, workspace, orgDefault);
+        const teamRead = readTeamParam(team, identity, resolvedTarget);
+        if (teamRead.error) return { content: [{ type: "text", text: teamRead.error }] };
+        targetCtx = { workspaceId: scopeWrite(identity, resolvedTarget, teamRead.teamId), actorId: identity.userId };
+      }
+
+      const result = await storeFile(env, ctx, targetCtx, {
+        bytes, filename, mimeType: mime_type, summary, tags,
+        source: "claude", maxBytes: MAX_MCP_FILE_BYTES,
+      });
+      if (!result.ok) return { content: [{ type: "text", text: result.error }] };
+      return {
+        content: [{
+          type: "text",
+          text: `Stored "${result.filename}" (${result.size} bytes) as ${result.id}. `
+            + `Fetch it with GET /files?id=${result.id} using this brain's Bearer token.`,
+        }],
+      };
     }
   );
 

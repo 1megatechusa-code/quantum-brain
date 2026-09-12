@@ -86,6 +86,7 @@ If Vectorize is unavailable, captures and keyword recall continue working. Your 
 | `unlink` | Remove a relationship between two memories |
 | `connections` | List the memories connected to a memory |
 | `share` | Move a memory between the Personal and Shared layers |
+| `upload_file` | Store a real file (image, PDF, document) as a findable memory, up to 4 MB per upload |
 
 On a team brain, memory tools accept a `workspace` of `personal` or `company` when you want to choose a layer explicitly. `company` is the wire value for the Shared team layer. Without `workspace`, captures use the member and team defaults, while recall searches everything that person is allowed to see.
 

@@ -33,6 +33,7 @@ const EXPECTED_TOOLS = [
   "link",
   "unlink",
   "connections",
+  "upload_file",
 ];
 
 async function withMcpClient(env: Env, run: (client: Client) => Promise<void>) {
