@@ -563,7 +563,7 @@ export class D1Mock {
             .map((e: any) => ({ id: e.id, vector_ids: e.vector_ids ?? "[]", content: e.content, tags: e.tags, source: e.source, created_at: e.created_at }));
           return { results };
         }
-        if (s.includes("WHERE content LIKE") && s.includes("ORDER BY created_at DESC LIMIT")) {
+        if (s.includes("content LIKE ?") && s.includes("ORDER BY created_at DESC LIMIT")) {
           // Keyword (hybrid recall) query: content LIKE ? OR content LIKE ? ... LIMIT ?
           const limit = Number(args[args.length - 1]);
           const patterns = args.slice(0, -1).map((a: any) => String(a).replace(/^%/, "").replace(/%$/, "").toLowerCase());

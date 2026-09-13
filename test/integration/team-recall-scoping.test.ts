@@ -194,4 +194,71 @@ describe("recallEntries with an Identity", () => {
     expect(aggregate!).toContain("FROM entries WHERE workspace_id IN (?, ?)");
     expect(aggregate!).not.toContain("created_at");
   });
+
+  /**
+   * QA 2026-09, bug A1. The keyword arm's OR chain was wrapped in parentheses
+   * only when a time bound was present, so for an ordinary multi-word question
+   * the appended `AND workspace_id IN (...)` bound to the LAST term alone:
+   * `a OR b AND scope` is `a OR (b AND scope)`. Every earlier term matched rows
+   * from every workspace. Scoped hydration dropped them before rendering, but
+   * they had already taken the caller's candidate slots — and the row data had
+   * left D1.
+   *
+   * Only real SQLite can show this: d1-mock ignores precedence. The assertion is
+   * on the rows the statement RETURNS, not on the final matches, because the
+   * final matches were always clean — that is exactly how the bug hid.
+   */
+  it("scopes every term of a multi-word query, not just the last one (A1)", async () => {
+    // Foreign rows match the FIRST query word; the caller's own row matches the
+    // SECOND. Before the fix, the statement returned both foreign rows.
+    seedIn(sqlite, "own", "ws-a", "gamma notes for my team");
+    seedIn(sqlite, "foreign-1", "ws-b", "beta private diary");
+    seedIn(sqlite, "foreign-2", "ws-b", "beta private ledger");
+    const { ctx } = makeCtx();
+
+    const keywordRows = async (query: string, internal?: RecallInternalOptions) => {
+      sqlite.issued.length = 0;
+      const res = await recallEntries({ query, topK: 10, synthesize: false }, env, ctx, undefined, internal);
+      const sql = sqlite.issued.find(s => s.includes("content LIKE ?") && s.includes("ORDER BY created_at DESC LIMIT"))!;
+      return { res, sql };
+    };
+
+    // Scoped, no time bound: the shape that leaked.
+    const scoped = await keywordRows("beta gamma", { identity: memberOf("ws-a") });
+    expect(scoped.sql).toBe(
+      `SELECT id, content, tags, source, created_at FROM entries WHERE (content LIKE ? OR content LIKE ?) AND workspace_id IN (?, ?) ORDER BY created_at DESC LIMIT ?`,
+    );
+    // Re-run the exact issued statement with the exact bindings recall used and
+    // look at what D1 hands back — the leak was in this row set, not downstream.
+    const returned = sqlite.db.prepare(scoped.sql).bind("%beta%", "%gamma%", "ws-a", "ws-co", 500).all();
+    const returnedIds = ((await returned).results as { id: string }[]).map(r => r.id);
+    expect(returnedIds).toEqual(["own"]);
+    expect(scoped.res.matches.map(m => m.id)).toEqual(["own"]);
+
+    // A scoped query where the foreign term comes LAST was never affected — the
+    // fix must not have changed which rows that returns either.
+    const swapped = sqlite.db.prepare(scoped.sql).bind("%gamma%", "%beta%", "ws-a", "ws-co", 500).all();
+    expect(((await swapped).results as { id: string }[]).map(r => r.id)).toEqual(["own"]);
+
+    // A time-bounded query was already parenthesised; it keeps that shape.
+    const timed = await keywordRows("beta gamma last 7 days", { identity: memberOf("ws-a") });
+    expect(timed.sql).toBe(
+      `SELECT id, content, tags, source, created_at FROM entries WHERE (content LIKE ? OR content LIKE ?) AND created_at >= ? AND workspace_id IN (?, ?) ORDER BY created_at DESC LIMIT ?`,
+    );
+
+    // Unscoped (no Identity): parenthesised too, and it still returns every
+    // matching row — the parentheses change precedence, not reach.
+    const unscoped = await keywordRows("beta gamma");
+    expect(unscoped.sql).toBe(
+      `SELECT id, content, tags, source, created_at FROM entries WHERE (content LIKE ? OR content LIKE ?) ORDER BY created_at DESC LIMIT ?`,
+    );
+    expect(unscoped.res.matches.map(m => m.id).sort()).toEqual(["foreign-1", "foreign-2", "own"]);
+
+    // A single term has nothing to mis-bind and stays byte-identical to the
+    // pre-tenancy statement (pinned above); nothing about it changed.
+    const single = await keywordRows("beta", { identity: memberOf("ws-a") });
+    expect(single.sql).toBe(
+      `SELECT id, content, tags, source, created_at FROM entries WHERE content LIKE ? AND workspace_id IN (?, ?) ORDER BY created_at DESC LIMIT ?`,
+    );
+  });
 });

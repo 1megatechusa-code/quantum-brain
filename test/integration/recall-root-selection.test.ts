@@ -24,7 +24,7 @@ describe("recall root selection", () => {
       edge(db, "dense-root", "weak");
       const prepare = db.prepare.bind(db);
       (db as any).prepare = (sql: string) => {
-        if (sql.includes("WHERE content LIKE") && sql.includes("ORDER BY created_at DESC LIMIT")) {
+        if (sql.includes("content LIKE ?") && sql.includes("ORDER BY created_at DESC LIMIT")) {
           return { bind: () => ({ all: async () => ({ results: db.entries
             .filter(entry => ["dense-root", "keyword-root"].includes(entry.id))
             .map(({ id, content, tags, source, created_at }) => ({ id, content, tags, source, created_at })) }) }) };
@@ -91,7 +91,7 @@ describe("recall root selection", () => {
     seed(db, "ledger-answer", "The ledger reconciliation decision fixed the status", ["work"]);
     edge(db, "ledger-root", "ledger-answer");
     const prepare = db.prepare.bind(db);
-    (db as any).prepare = (sql: string) => sql.includes("WHERE content LIKE") && sql.includes("ORDER BY created_at DESC LIMIT")
+    (db as any).prepare = (sql: string) => sql.includes("content LIKE ?") && sql.includes("ORDER BY created_at DESC LIMIT")
       ? { bind: () => ({ all: async () => ({ results: [] }) }) }
       : prepare(sql);
     const diagnostics: RecallDiagnostics = {};
@@ -125,7 +125,7 @@ describe("recall root selection", () => {
     seed(db, "weak-fifth", "quartz archive note");
     seed(db, "strong-root", "quartz ledger protocol decision record", ["status:canonical"]);
     const prepare = db.prepare.bind(db);
-    (db as any).prepare = (sql: string) => sql.includes("WHERE content LIKE") && sql.includes("ORDER BY created_at DESC LIMIT")
+    (db as any).prepare = (sql: string) => sql.includes("content LIKE ?") && sql.includes("ORDER BY created_at DESC LIMIT")
       ? { bind: () => ({ all: async () => ({ results: [] }) }) }
       : prepare(sql);
     const env = makeTestEnv(db, { VECTORIZE: makeVectorizeMock({ query: vi.fn().mockResolvedValue({ matches: [
@@ -154,7 +154,7 @@ describe("recall root selection", () => {
       (db.entries.at(-1) as any).recall_count = 10_000;
     }
     const prepare = db.prepare.bind(db);
-    (db as any).prepare = (sql: string) => sql.includes("WHERE content LIKE") && sql.includes("ORDER BY created_at DESC LIMIT")
+    (db as any).prepare = (sql: string) => sql.includes("content LIKE ?") && sql.includes("ORDER BY created_at DESC LIMIT")
       ? { bind: () => ({ all: async () => ({ results: [] }) }) }
       : prepare(sql);
     const vectorQuery = vi.fn().mockResolvedValue({ matches: [
@@ -194,7 +194,7 @@ describe("recall root selection", () => {
       if (i <= 4 || i === 17) (db.entries.at(-1) as any).recall_count = 10_000;
     }
     const prepare = db.prepare.bind(db);
-    (db as any).prepare = (sql: string) => sql.includes("WHERE content LIKE") && sql.includes("ORDER BY created_at DESC LIMIT")
+    (db as any).prepare = (sql: string) => sql.includes("content LIKE ?") && sql.includes("ORDER BY created_at DESC LIMIT")
       ? { bind: () => ({ all: async () => ({ results: [] }) }) }
       : prepare(sql);
     const query = vi.fn().mockResolvedValue({ matches: Array.from({ length: 17 }, (_, index) => ({
@@ -233,7 +233,7 @@ describe("recall root selection", () => {
       if (sql.includes("AS total") && sql.includes("SUM(CASE WHEN content LIKE")) {
         return { bind: () => ({ first: async () => ({ total: 100, d0: 90, d1: 15, d2: 80, d3: 85 }) }) };
       }
-      if (sql.includes("WHERE content LIKE") && sql.includes("ORDER BY created_at DESC LIMIT")) {
+      if (sql.includes("content LIKE ?") && sql.includes("ORDER BY created_at DESC LIMIT")) {
         const row = db.entries.find(entry => entry.id === "anchor-root")!;
         return { bind: (...bindings: unknown[]) => ({
           all: async () => ({
@@ -329,7 +329,7 @@ describe("recall root selection", () => {
     edge(db, "chunk-root", "unrelated-neighbor");
     for (let i = 0; i < 5; i++) seed(db, `direct-${i}`, "alpha beta gamma direct evidence");
     const prepare = db.prepare.bind(db);
-    (db as any).prepare = (sql: string) => sql.includes("WHERE content LIKE") && sql.includes("ORDER BY created_at DESC LIMIT")
+    (db as any).prepare = (sql: string) => sql.includes("content LIKE ?") && sql.includes("ORDER BY created_at DESC LIMIT")
       ? { bind: () => ({ all: async () => ({ results: [] }) }) }
       : prepare(sql);
     const env = makeTestEnv(db, { VECTORIZE: makeVectorizeMock({ query: vi.fn().mockResolvedValue({ matches: [
@@ -351,7 +351,7 @@ describe("recall root selection", () => {
     seed(db, "long-neighbor", `alpha ${noise} beta ${noise} gamma`);
     edge(db, "long-root", "long-neighbor");
     const prepare = db.prepare.bind(db);
-    (db as any).prepare = (sql: string) => sql.includes("WHERE content LIKE") && sql.includes("ORDER BY created_at DESC LIMIT")
+    (db as any).prepare = (sql: string) => sql.includes("content LIKE ?") && sql.includes("ORDER BY created_at DESC LIMIT")
       ? { bind: () => ({ all: async () => ({ results: [] }) }) }
       : prepare(sql);
     const diagnostics: RecallDiagnostics = {};
@@ -378,7 +378,7 @@ describe("recall root selection", () => {
     seed(db, "localized-neighbor", content);
     edge(db, "localized-root", "localized-neighbor");
     const prepare = db.prepare.bind(db);
-    (db as any).prepare = (sql: string) => sql.includes("WHERE content LIKE") && sql.includes("ORDER BY created_at DESC LIMIT")
+    (db as any).prepare = (sql: string) => sql.includes("content LIKE ?") && sql.includes("ORDER BY created_at DESC LIMIT")
       ? { bind: () => ({ all: async () => ({ results: [] }) }) }
       : prepare(sql);
     const diagnostics: RecallDiagnostics = {};

@@ -64,7 +64,17 @@ async function keywordSearch(
   // plus strangers' rows truncated by the window.
   const scope = identity ? scopeWhereForRead(identity, { layer: only, teamId }) : null;
   const scopeSql = scope ? ` AND ${scope.clause}` : "";
-  const tokenWhere = timeWhere ? `(${where})` : where;
+  // The OR chain is parenthesised whenever it IS a chain. Every clause appended
+  // after it — time bounds and the workspace scope — is AND'd, and AND binds
+  // tighter than OR, so an unparenthesised `a OR b AND workspace_id IN (?)`
+  // reads as `a OR (b AND scope)`: every term but the last matched rows from
+  // every workspace. The scoped hydration downstream dropped those rows before
+  // they were rendered, but they had already taken the caller's topK slots.
+  // This used to parenthesise only when a time bound was present, which is why
+  // single-word and time-bounded queries were scoped and ordinary questions
+  // were not (QA 2026-09, bug A1). A single term has nothing to mis-bind, so it
+  // stays unwrapped and byte-identical to the pre-tenancy statement.
+  const tokenWhere = terms.length > 1 ? `(${where})` : where;
   const { results } = await env.DB.prepare(
     `SELECT id, content, tags, source, created_at FROM entries WHERE ${tokenWhere}${timeWhere}${scopeSql} ORDER BY created_at DESC LIMIT ?`
   ).bind(...terms.map(t => `%${t}%`), ...timeBindings, ...(scope?.bindings ?? []), limit).all();

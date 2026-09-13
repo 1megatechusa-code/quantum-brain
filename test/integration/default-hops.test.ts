@@ -37,7 +37,7 @@ function env(db: D1Mock, overrides?: Record<string, unknown>) {
   return makeTestEnv(db, {
     DB: {
       prepare: (sql: string) => {
-        if (sql.includes("WHERE content LIKE") && sql.includes("ORDER BY created_at DESC LIMIT")) {
+        if (sql.includes("content LIKE ?") && sql.includes("ORDER BY created_at DESC LIMIT")) {
           return { bind: () => ({ all: async () => ({ results: [] }) }) };
         }
         return db.prepare(sql);

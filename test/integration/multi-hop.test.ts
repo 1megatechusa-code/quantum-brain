@@ -31,7 +31,7 @@ function denseEnv(db: D1Mock, matches: { id: string; score: number }[]) {
 function suppressKeywordSearch(db: D1Mock) {
   const prepare = db.prepare.bind(db);
   (db as any).prepare = (sql: string) => {
-    if (sql.includes("WHERE content LIKE") && sql.includes("ORDER BY created_at DESC LIMIT")) {
+    if (sql.includes("content LIKE ?") && sql.includes("ORDER BY created_at DESC LIMIT")) {
       return { bind: () => ({ all: async () => ({ results: [] }) }) };
     }
     return prepare(sql);
