@@ -32,6 +32,7 @@ import { workspaceFilter, queryVectorizeScoped } from "../vectorize/scope";
 import { observeRecallEnv } from "./diagnostics";
 import { chooseEvidenceSlot, type EvidenceSlotCandidate } from "./evidence-rescue";
 import { queryRelevantWindow } from "./snippet";
+import { INDEXABLE_SQL } from "../capture/lifecycle";
 
 async function keywordSearch(
   tokens: string[],
@@ -75,8 +76,17 @@ async function keywordSearch(
   // were not (QA 2026-09, bug A1). A single term has nothing to mis-bind, so it
   // stays unwrapped and byte-identical to the pre-tenancy statement.
   const tokenWhere = terms.length > 1 ? `(${where})` : where;
+  // Deprecated rows are refused here, at candidate generation, not only at the
+  // final hydration (QA 2026-09, P2a). deprecateEntry deletes a row's vectors,
+  // so the dense arm never sees it — but its text stays in `entries`, and this
+  // LIKE scan still matched it. Those rows then took topK slots through fusion,
+  // rerank and MMR and were dropped afterwards, so a query whose best keyword
+  // hits were deprecated came back short or empty while live answers ranked
+  // just outside the window. INDEXABLE_SQL is the one definition of "still in
+  // the index" (src/capture/lifecycle.ts); the graph walk applies the same
+  // verdict to its candidates (readableAndDeprecatedAmong).
   const { results } = await env.DB.prepare(
-    `SELECT id, content, tags, source, created_at FROM entries WHERE ${tokenWhere}${timeWhere}${scopeSql} ORDER BY created_at DESC LIMIT ?`
+    `SELECT id, content, tags, source, created_at FROM entries WHERE ${tokenWhere} AND ${INDEXABLE_SQL}${timeWhere}${scopeSql} ORDER BY created_at DESC LIMIT ?`
   ).bind(...terms.map(t => `%${t}%`), ...timeBindings, ...(scope?.bindings ?? []), limit).all();
   return results as unknown as KeywordRow[];
 }
