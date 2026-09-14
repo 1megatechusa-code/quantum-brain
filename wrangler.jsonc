@@ -12,10 +12,18 @@
 			"database_name": "quantum-brain","database_id": "bbdc6c0b-8bdd-4f93-8969-743849897524"
 		}
 	],
+	// A0 (qa-2026-09): repointed from `second-brain-vectors`, which was created
+	// without a metadata index on workspace_id, so every workspace-scoped query
+	// silently returned nothing. `quantum-brain-vectors` was created with that
+	// metadata index and holds a byte-identical copy of every vector D1 knows
+	// about. `second-brain-vectors` is left intact as the rollback target — flip
+	// this one line back to roll back. Any index this binding ever points at
+	// MUST carry `workspace_id` as a string metadata index:
+	//   wrangler vectorize create-metadata-index <name> --property-name=workspace_id --type=string
 	"vectorize": [
 		{
 			"binding": "VECTORIZE",
-			"index_name": "second-brain-vectors"
+			"index_name": "quantum-brain-vectors"
 		}
 	],
 	"ai": {
