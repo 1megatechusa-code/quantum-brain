@@ -25,7 +25,7 @@ describe("GET /health", () => {
     const data = await res.json() as any;
     expect(data.ok).toBe(true);
     expect(data.vectorize.ok).toBe(true);
-    expect(data.vectorize.indexName).toBe("second-brain-vectors");
+    expect(data.vectorize.indexName).toBe("quantum-brain-vectors");
   });
 
   it("echoes the Worker version (used by the desktop app's update check)", async () => {

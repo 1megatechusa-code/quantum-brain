@@ -46,7 +46,7 @@ describe("checkVectorizeHealth", () => {
 
   it("reports the vector count from the beta describe() shape (vectorsCount)", async () => {
     const health = await checkVectorizeHealth(
-      envDescribing({ name: "second-brain-vectors", config: { dimensions: 384, metric: "cosine" }, vectorsCount: 7 }),
+      envDescribing({ name: "quantum-brain-vectors", config: { dimensions: 384, metric: "cosine" }, vectorsCount: 7 }),
     );
     expect(health.vectorCount).toBe(7);
   });
@@ -76,7 +76,7 @@ describe("checkVectorizeHealth", () => {
     // and the README verify step expect.
     const health = await checkVectorizeHealth(envDescribing({ dimensions: 384 }));
     expect(health.indexName).toBe(FALLBACK_VECTORIZE_INDEX_NAME);
-    expect(health.indexName).toBe("second-brain-vectors");
+    expect(health.indexName).toBe("quantum-brain-vectors");
   });
 
   it("falls back when describe() reports an empty or non-string name", async () => {

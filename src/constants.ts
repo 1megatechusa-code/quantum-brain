@@ -103,7 +103,7 @@ export const INSIGHT_PASS_MAX_TOKENS = 1200;
 export const DIGEST_MAX_TOKENS = 400;
 
 export const VECTORIZE_FIX_HINT =
-  "run `npx wrangler vectorize create second-brain-vectors --dimensions=384 --metric=cosine`, or grant the build token Vectorize Edit and redeploy";
+  "run `npm run vectors:create` — i.e. `npx wrangler vectorize create quantum-brain-vectors --dimensions=384 --metric=cosine` AND `npx wrangler vectorize create-metadata-index quantum-brain-vectors --property-name=workspace_id --type=string` (without the metadata index every workspace-scoped query silently returns nothing) — or grant the build token Vectorize Edit and redeploy";
 
 // Durable marker written once, by src/recall/search.ts and src/capture/duplicate.ts,
 // the first time this isolate's workspace-filter latch (src/vectorize/scope.ts)

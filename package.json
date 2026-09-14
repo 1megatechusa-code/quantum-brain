@@ -15,7 +15,7 @@
     "db:create": "wrangler d1 create second-brain-db",
     "db:migrate": "wrangler d1 execute second-brain-db --file=db/schema.sql",
     "db:migrate:remote": "wrangler d1 execute second-brain-db --remote --file=db/schema.sql",
-    "vectors:create": "wrangler vectorize create second-brain-vectors --dimensions=384 --metric=cosine",
+    "vectors:create": "wrangler vectorize create quantum-brain-vectors --dimensions=384 --metric=cosine && wrangler vectorize create-metadata-index quantum-brain-vectors --property-name=workspace_id --type=string",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

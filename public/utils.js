@@ -324,10 +324,10 @@ function normalizeEntry(e) {
  * fetch failure never raises a false alarm. */
 function vectorizeHealthBanner(health) {
   if (!health || !health.vectorize || health.vectorize.ok) return null;
-  const name = health.vectorize.indexName || 'second-brain-vectors';
+  const name = health.vectorize.indexName || 'quantum-brain-vectors';
   return {
     title: t('upkeep.vectorizeBannerTitle', { name }),
-    command: 'npx wrangler vectorize create ' + name + ' --dimensions=384 --metric=cosine',
+    command: 'npx wrangler vectorize create ' + name + ' --dimensions=384 --metric=cosine && npx wrangler vectorize create-metadata-index ' + name + ' --property-name=workspace_id --type=string',
     gui: t('upkeep.vectorizeBannerGui'),
   };
 }
