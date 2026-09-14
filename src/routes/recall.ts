@@ -161,6 +161,9 @@ export async function handleRecallRoutes(
           truncated: s.truncated,
           full_length: s.fullLength,
           score: parseFloat((m.score * 100).toFixed(1)),
+          // Absolute 0-100 (QA 2026-09, P1). `score` above is rank-relative
+          // and stays for ordering and the existing bar widths.
+          confidence: parseFloat(((m.confidence ?? m.score) * 100).toFixed(1)),
           tags: m.tags,
           source: m.source,
           created_at: m.createdAt,

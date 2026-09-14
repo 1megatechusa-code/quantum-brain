@@ -57,7 +57,12 @@ export function renderRecallText(
     // Spelled month: this text is read by assistants, and a numeric date is
     // ambiguous between US and international order.
     const header = memoryHeader(m);
-    const score = (m.score * 100).toFixed(0);
+    // The number a reader sees is the ABSOLUTE confidence, never the rank-
+    // normalised `score` (which is 1 for the top match by construction, and read
+    // as "100% match" on results that were nothing of the kind — QA 2026-09,
+    // P1). `score` is kept only as the fallback for fixtures that predate
+    // confidence.
+    const score = ((m.confidence ?? m.score) * 100).toFixed(0);
     const updateLabel = m.isUpdate ? " [updated]" : "";
     const hopLabel = m.hop > 0 ? ` [related · ${hopProvenance(m, contentById)}]` : "";
     const staleLabel = m.staleAsOf ? ` · ${formatAsOfQualifier(m.updatedAt)}` : "";

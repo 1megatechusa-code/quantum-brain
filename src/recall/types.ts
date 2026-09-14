@@ -11,7 +11,24 @@ export interface CompoundStaleSignal {
 export interface RecallMatch {
   id: string;
   content: string;
+  /**
+   * Ranking score, relative to the strongest match in this result set (the top
+   * match is 1). Use it to ORDER — it is what the pipeline ranked on — never to
+   * judge whether a match is any good: the first result is always 1 by
+   * construction.
+   */
   score: number;
+  /**
+   * How well this memory matches the query on an absolute 0–1 scale, independent
+   * of what else was returned (QA 2026-09, P1). For a memory the dense arm
+   * found, the cosine similarity Vectorize reported; for a keyword-only hit,
+   * the IDF-weighted fraction of the query it covers; for a graph-expanded
+   * match, its linked-evidence score. The larger of cosine and coverage when
+   * both exist. This is the number shown as "NN% match". Optional only so
+   * fixtures built before it existed still type-check; the pipeline always
+   * sets it.
+   */
+  confidence?: number;
   createdAt: number;
   updatedAt: number;
   tags: string[];

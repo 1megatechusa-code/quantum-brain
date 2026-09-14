@@ -8,6 +8,13 @@ export interface VectorizeMatch {
   score: number;
   metadata?: Record<string, unknown>;
   values?: number[] | Float32Array | Float64Array;
+  /**
+   * The cosine similarity the dense arm reported for this match, kept apart
+   * from `score` because fusion overwrites `score` with a rank-based value.
+   * Absent on keyword-only candidates. This is what recall reports back to the
+   * caller as confidence (QA 2026-09, P1).
+   */
+  similarity?: number;
 }
 
 export interface RerankOptions {

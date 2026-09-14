@@ -119,7 +119,9 @@ async function sendRecall(retryQuery) {
         id: m.id,
         content: m.content,
         tags: m.tags || [],
-        score: Math.min(100, Math.round(m.score)),
+        // Prefer the absolute confidence the Worker now returns; older Workers
+        // send only the rank-relative score.
+        score: Math.min(100, Math.round(m.confidence ?? m.score)),
         hop: m.hop || 0,
         created_at: m.created_at,
         source: m.source,
@@ -145,7 +147,7 @@ async function sendRecall(retryQuery) {
             const tagList = m.tags && m.tags.length ? ` [${m.tags.join(', ')}]` : ''
             const src = m.source ? ` · ${m.source}` : ''
             const related = m.hop > 0 ? ` [related, ${m.hop} hop${m.hop > 1 ? 's' : ''}]` : ''
-            return `${i + 1}. [${date}${src}${tagList}] (${Math.min(100, Math.round(m.score))}% match)${m.updated ? ' [updated]' : ''}${related}\n${m.content}`
+            return `${i + 1}. [${date}${src}${tagList}] (${Math.min(100, Math.round(m.confidence ?? m.score))}% match)${m.updated ? ' [updated]' : ''}${related}\n${m.content}`
           })
           .join('\n\n')
       const res = await fetch(`${WORKER_URL}/chat`, {

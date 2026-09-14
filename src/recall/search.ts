@@ -152,7 +152,7 @@ function fuseDenseAndKeyword(
   for (const [pid, score] of fused) {
     const dm = denseByParent.get(pid);
     if (dm) {
-      out.push({ id: dm.id, score, metadata: dm.metadata, values: dm.values });
+      out.push({ id: dm.id, score, metadata: dm.metadata, values: dm.values, similarity: dm.score });
     } else {
       const r = keywordRowById.get(pid)!;
       out.push({ id: pid, score, metadata: { parentId: pid, created_at: r.created_at, tags: JSON.parse(r.tags ?? "[]"), content: r.content, source: r.source } });
@@ -177,6 +177,27 @@ export function mergeFusedMatches(primary: VectorizeMatch[], secondary: Vectoriz
     out.push(m);
   }
   return out;
+}
+
+/**
+ * A match's absolute confidence (QA 2026-09, P1): the larger of the dense arm's
+ * cosine (when it has one) and the share of the retrieval vocabulary the text
+ * contains, clamped to [0, 1]. Independent of the rest of the result set, so a
+ * weak match reads weak wherever it ranks.
+ *
+ * Coverage is UNWEIGHTED on purpose (`NO_CORPUS_STATS`): with corpus IDF a
+ * query word that appears in no memory at all gets the largest weight, so a
+ * row holding the one identifying term of a verbose question scored lower
+ * than a row holding nothing. "Contains N of the M words searched, substrings
+ * at a quarter" is the claim a reader can check by eye.
+ *
+ * Cosine is reported raw. bge-small-en-v1.5 rarely scores unrelated text
+ * below ~0.3, so "30%" is its floor, not a third of the way to a match.
+ */
+const NO_CORPUS_STATS = { df: null, total: null } as const;
+function absoluteConfidence(similarity: number | undefined, text: string, retrievalTokens: string[]): number {
+  const coverage = queryCoverage(text, retrievalTokens, NO_CORPUS_STATS).score;
+  return Math.max(0, Math.min(1, Math.max(similarity ?? 0, coverage)));
 }
 
 export async function recallEntries(
@@ -507,6 +528,7 @@ export async function recallEntries(
       id: parentId,
       content: row.content as string,
       score: m.score,
+      confidence: absoluteConfidence(m.similarity, row.content as string, profile.retrievalTokens),
       createdAt: row.created_at as number,
       updatedAt: (row.updated_at as number | null) ?? (row.created_at as number),
       tags: JSON.parse(row.tags ?? "[]"),
@@ -567,6 +589,7 @@ export async function recallEntries(
         id: e.id,
         content: row.content as string,
         score: evidence.score,
+        confidence: Math.max(0, Math.min(1, evidence.score)),
         createdAt: row.created_at as number,
         updatedAt: (row.updated_at as number | null) ?? (row.created_at as number),
         tags: JSON.parse(row.tags ?? "[]"),
@@ -637,6 +660,7 @@ export async function recallEntries(
         id: root.parentId,
         content: row.content as string,
         score: root.rootScore,
+        confidence: absoluteConfidence(root.similarity, row.content as string, profile.retrievalTokens),
         createdAt: row.created_at as number,
         updatedAt: "last_updated" in row
           ? row.last_updated as number
@@ -700,6 +724,11 @@ export async function recallEntries(
     ).catch(e => console.error("recall_count update failed (non-fatal):", e))
   );
 
+  // `score` is normalised to the strongest match for ORDERING and for the
+  // full-text allowance (snippet.ts allowanceFor) — the top match is 1 by
+  // construction. It is not a confidence, and it is no longer what callers are
+  // shown as "NN% match": that is `confidence` (set above, absolute), which
+  // this loop deliberately leaves alone (QA 2026-09, P1).
   const maxScore = matches.reduce((mx, m) => Math.max(mx, m.score), 0);
   if (maxScore > 0) for (const m of matches) m.score = m.score / maxScore;
 
