@@ -151,6 +151,24 @@ function fuseDenseAndKeyword(
   return out;
 }
 
+/**
+ * The union of two fused candidate lists, keyed by parent entry. `primary`
+ * entries keep their score and order; a parent present only in `secondary` is
+ * appended with its secondary score. See the P2c note at the call site.
+ */
+export function mergeFusedMatches(primary: VectorizeMatch[], secondary: VectorizeMatch[]): VectorizeMatch[] {
+  const parentOf = (m: VectorizeMatch) => ((m.metadata as any)?.parentId ?? m.id) as string;
+  const seen = new Set(primary.map(parentOf));
+  const out = [...primary];
+  for (const m of secondary) {
+    const pid = parentOf(m);
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    out.push(m);
+  }
+  return out;
+}
+
 export async function recallEntries(
   params: { query: string; topK: number; tag?: string; after?: number; before?: number; kind?: MemoryKind; hops?: number; synthesize?: boolean },
   env: Env,
@@ -328,7 +346,19 @@ export async function recallEntries(
 
   const rootFusedMatches = fuseDenseAndKeyword(results.matches as VectorizeMatch[], keywordRows, profile.retrievalTokens, !tag || semanticUnavailable, distilled, cfg.SUBSTRING_MATCH_WEIGHT);
   const lexicalFusedMatches = fuseDenseAndKeyword(results.matches as VectorizeMatch[], keywordRows, tokens, !tag || semanticUnavailable, distilled, cfg.SUBSTRING_MATCH_WEIGHT);
-  const fusedMatches = lexicalFusedMatches.length ? lexicalFusedMatches : rootFusedMatches;
+  // Union, not override (QA 2026-09, P2c). The lexical fusion ranks on the
+  // distilled tokens and is the primary ordering; the root fusion ranks on the
+  // wider retrieval vocabulary — evidence tokens, identifier probes and the
+  // deterministic stems ("pets" → "pet"). This used to take the lexical list
+  // whenever it was non-empty and drop the root list on the floor, which threw
+  // away any row that matched the query ONLY through a stem or a probe the
+  // moment some other row matched a distilled token: "does the user have any
+  // pets" fetched "…has a pet blue jay…" through the keyword arm and then never
+  // scored it. Every lexical entry keeps its lexical score and position, so the
+  // ordering among candidates that were already present is unchanged; a row the
+  // root fusion found and the lexical one did not is appended with its root
+  // score and competes in the rerank like any other candidate.
+  const fusedMatches = mergeFusedMatches(lexicalFusedMatches, rootFusedMatches);
   if (!rootFusedMatches.length && !fusedMatches.length) return { matches: [], insight: "", semanticUnavailable };
 
   const candidateIds = [...new Set([...fusedMatches, ...rootFusedMatches].map(m => (m.metadata as any)?.parentId ?? m.id))] as string[];

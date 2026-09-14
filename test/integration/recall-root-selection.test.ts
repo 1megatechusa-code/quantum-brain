@@ -224,7 +224,11 @@ describe("recall root selection", () => {
     });
   });
 
-  it("recovers a supplemental-anchor candidate without reordering the direct top four", async () => {
+  // QA 2026-09 P2c: the root-arm-only anchor used to be reachable only through
+  // the hops>0 evidence slot, so it sat fifth. Fusion is now a union, so a row
+  // matching three of the four query words competes on its own score and leads;
+  // the four direct hits keep their relative order.
+  it("surfaces a root-arm-only anchor on its own score, keeping the direct order", async () => {
     const db = new D1Mock();
     for (let i = 0; i < 5; i++) seed(db, `direct-${i}`, `ledger note ${i}`);
     seed(db, "anchor-root", "quartz protocol compass decision record", ["status:canonical"]);
@@ -260,7 +264,7 @@ describe("recall root selection", () => {
     expect(diagnostics.keywordIds).toContain("anchor-root");
     expect(diagnostics.fusedIds).toContain("anchor-root");
     expect(result.matches.map(match => match.id)).toEqual([
-      "direct-0", "direct-1", "direct-2", "direct-3", "anchor-root",
+      "anchor-root", "direct-0", "direct-1", "direct-2", "direct-3",
     ]);
   });
 
