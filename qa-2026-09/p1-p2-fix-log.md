@@ -110,3 +110,71 @@ deletes in one pass.
 - **Full 8-question re-run on the new code:** **not completed at time of writing.** See the session
   report for the reason and the two ways to finish it (deploy on go-ahead and re-run live via the
   connector, or re-run the local instance once the machine is responsive).
+
+---
+
+## 2026-09-14 — deploy, live re-run, and outcome
+
+**Deployed:** branch head `c6d7d7c` (A1 + A0 + follow-up + P2c + P2a + P1) to production at
+2026-09-14T13:56:14Z, version `14fa9026-40e8-41e1-b0ab-44df85e88015`. The uncommitted larger-of
+`mergeFusedMatches` change (see below) is NOT in this build.
+
+**Live 8-question re-run** via the `quantum-brain-product` connector, 9 seeds (`minibench_v2`, same
+facts verbatim), same 10 phrasings as the 7/8 run, topK 5:
+
+| # | Result | Rank | Rank-1 shown |
+|---|---|---|---|
+| 1 | pass | 1 (44%) | the seed itself |
+| 2 | pass | 1 (68%) | — |
+| 3 | pass | 1 (65%); stale bug not in top 5 | — |
+| 4 | pass (low-rank) | 3 (54%) | unrelated marker at **45%** (was "100%") |
+| 5a / 5b | pass / pass (low-rank) | 1 (52%) / 4 (48%) | 5b rank-1 unrelated at **56%** (was "100%") |
+| 6a / 6b | pass / pass | 1 (72%) / 3 (55%) | — |
+| 7 | **FAIL — target absent** | not in top 5, 6 or 9; rank 3 at topK 15 | unrelated at 41% (was "100%") |
+| 8 | pass | 1 | — |
+
+**Score: 7/8 — unchanged from the post-A0 run.** The **false-100% fix (P1) is confirmed working**: no
+result anywhere in the run reads 100% except exact keyword hits, and on Q4/Q5b/Q7 the irrelevant rank-1
+now shows a number below the true answer's. Q7 did not pass; see open item 1.
+
+**Data restoration (done, verified).** Seeding fired the newly-live contradiction detector twice, and both
+were false positives that auto-deprecated real memories: `6beb831c-…` ("DynamiteDTF will switch its
+shipping carrier to UPS starting in October 2026" — "date differs") and `f984844f-…` ("Has a new pet
+alligator" — "different pet type"). Restored by removing `status:deprecated` in D1 (exact original tag
+sets) and re-indexing each through the product's own `update` with identical content and original
+volatility; both verified retrievable. Residuals: `updated_at` now reads 2026-09-14 and each carries
+`contradiction_losses = 1`. All 9 `minibench_v2` seeds deleted afterwards (9 entries, 9 vectors);
+`list_recent(tag: minibench_v2)` returns nothing.
+
+**Left uncommitted, deliberately, for review:** `src/recall/search.ts` — `mergeFusedMatches` changed
+from primary-wins to larger-of (a parent in both lists takes the larger fused score). Diagnosed on the
+live data: the blue-jay row IS in the dense window (cosine 0.52), so the lexical list already holds it as a
+dense-only entry scored 1/(k+rank) and primary-wins discarded its root-list `pet`-stem credit. Also
+uncommitted: a 4th case in `recall-fusion-quality.test.ts` that I could not make fail against
+primary-wins in the harness after several fixture revisions. Neither is deployed.
+
+### Open items for a dedicated session (both discovered today, neither diagnosed to a fix)
+
+1. **Rerank/diversity drop (Q7).** A candidate present in the pool at topK 15 is excluded at topK 5–9.
+   Evidence: the keyword arm fetches the row (verified with the exact statement against live D1), the
+   dense arm returns it (cosine 0.52), and it re-sorts to rank 3 once admitted — so the loss is in
+   MMR selection order, most likely the similarity penalty against the tag-boosted "dog Joker" row
+   (`inferQueryTags` maps "pets" → `dog/joker/personal`, ×1.45), compounded by the primary-wins merge.
+   Unconfirmed: mock reproductions did not converge. Start from a live diagnostics hook, not from mocks.
+2. **Contradiction-detection false positives, live in production since A0.** Every capture whose nearest
+   neighbour scores ≥ `CANDIDATE_SCORE_THRESHOLD` (0.45, a constant) is judged by the LLM, and a
+   "contradiction" verdict deprecates and un-indexes the older memory with no threshold, flag, or
+   confirmation (`src/capture/entry.ts:248-261`). 2 of 9 seeds today hit real memories. **No config-only
+   mitigation exists**: the duplicate thresholds only select the prompt, and both prompts can return a
+   contradiction. A flag-only mode (tag + `supersedes` edge, no `deprecateEntry`) is a small code change
+   but was not attempted today. Interim: `status:canonical` entries are already protected (the incoming
+   memory is stored as draft instead) — a shield for chosen entries only, not a fix.
+
+### Before this branch merges to `main`
+
+- Clean full-suite run on a quiet machine. Today's runs carried 16 subprocess-spawn timeouts
+  (`repo-hygiene`, `claude-code-hooks-contract`) caused by the machine (measured 4–5 s per process
+  spawn), unrelated to recall code and passing on the parent commits earlier in the day. They must be
+  seen green, not assumed.
+- Decide the two uncommitted files above.
+- Open item 2 should be fixed or flag-gated before any customer relies on capture.
