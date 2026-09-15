@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { captureEntry } from "../../src/capture/entry";
+import { DEFAULTS } from "../../src/config";
+import { applyStatus } from "../../src/capture/lifecycle";
 import { makeTestDb, makeTestEnv, makeVectorizeMock } from "../helpers/make-env";
 import type { Env } from "../../src/env";
 import { D1Mock } from "../helpers/d1-mock";
@@ -11,6 +13,11 @@ function makeCtx() {
     drain: () => Promise.allSettled(pending),
   };
 }
+
+// Auto-deprecation is opt-in since 2026-09 (src/config.ts CONTRADICTION_MODE).
+// The tests below that assert a deprecation pass this; everything else runs on
+// DEFAULTS, i.e. the flag-only default.
+const RESOLVE = Object.freeze({ ...DEFAULTS, CONTRADICTION_MODE: "resolve" });
 
 function makeContradictionAI(response: string) {
   return {
@@ -145,7 +152,7 @@ describe("captureEntry()", () => {
 
   // ── Contradiction ───────────────────────────────────────────────────────────
 
-  it("returns status=contradiction, stores new entry, and DEPRECATES (not deletes) the conflicting entry", async () => {
+  it("CONTRADICTION_MODE=resolve: returns status=contradiction, stores new entry, and DEPRECATES (not deletes) the conflicting entry", async () => {
     db.entries.push({
       id: "old-entry",
       content: "I live in NYC",
@@ -169,7 +176,7 @@ describe("captureEntry()", () => {
     });
 
     const { ctx } = makeCtx();
-    const result = await captureEntry("I moved to LA", [], "api", env, ctx);
+    const result = await captureEntry("I moved to LA", [], "api", env, ctx, RESOLVE);
 
     expect(result.status).toBe("contradiction");
     if (result.status !== "contradiction") return;
@@ -246,7 +253,7 @@ describe("captureEntry()", () => {
     expect(newRow!.contradiction_losses).toBe(1);
   });
 
-  it("adds contradiction-resolved tag when contradiction detected", async () => {
+  it("CONTRADICTION_MODE=resolve: adds contradiction-resolved tag when contradiction detected", async () => {
     db.entries.push({
       id: "conflict",
       content: "I live in NYC",
@@ -266,7 +273,7 @@ describe("captureEntry()", () => {
       AI: makeContradictionAI('{"contradicts": true, "conflicting_id": "conflict", "reason": "changed location"}'),
     });
     const { ctx } = makeCtx();
-    const result = await captureEntry("I moved to LA", [], "api", env, ctx);
+    const result = await captureEntry("I moved to LA", [], "api", env, ctx, RESOLVE);
     expect(result.status).toBe("contradiction");
     if (result.status !== "contradiction") return;
     const storedEntry = db.entries.find(e => e.id === result.id);
@@ -704,7 +711,19 @@ describe("captureEntry()", () => {
     expect(JSON.parse(added.tags)).toContain("status:draft");
   });
 
-  it("a hand-written contradiction still deprecates (unchanged behaviour)", async () => {
+  it("a hand-written contradiction still deprecates when CONTRADICTION_MODE=resolve is opted into", async () => {
+    db.entries = [existingNote("claude")];
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({ query: vi.fn().mockResolvedValue({ matches: [{ id: "existing", score: 0.7, metadata: { parentId: "existing" } }] }) }),
+      AI: makeContradictionAI('{"contradicts": true, "conflicting_id": "existing", "reason": "reversed decision"}'),
+    });
+    const { ctx } = makeCtx();
+    const result = await captureEntry("We moved off Vectorize to a KV index.", [], "claude", env, ctx, RESOLVE);
+    expect(result.status).toBe("contradiction");
+    expect(JSON.parse(db.entries.find(e => e.id === "existing")!.tags)).toContain("status:deprecated");
+  });
+
+  it("a hand-written contradiction on the default config is flagged, not deprecated", async () => {
     db.entries = [existingNote("claude")];
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({ query: vi.fn().mockResolvedValue({ matches: [{ id: "existing", score: 0.7, metadata: { parentId: "existing" } }] }) }),
@@ -712,8 +731,10 @@ describe("captureEntry()", () => {
     });
     const { ctx } = makeCtx();
     const result = await captureEntry("We moved off Vectorize to a KV index.", [], "claude", env, ctx);
-    expect(result.status).toBe("contradiction");
-    expect(JSON.parse(db.entries.find(e => e.id === "existing")!.tags)).toContain("status:deprecated");
+    expect(result.status).toBe("contradiction_flagged");
+    const existing = db.entries.find(e => e.id === "existing")!;
+    expect(JSON.parse(existing.tags)).not.toContain("status:deprecated");
+    expect(existing.vector_ids).toBe('["existing-vec"]');
   });
 
   // ── Prompt Capsule definitions (#329) ───────────────────────────────────────
@@ -775,5 +796,260 @@ describe("captureEntry()", () => {
     expect(result.status).toBe("stored");
     expect(db.entries).toHaveLength(2)
     expect(JSON.parse(db.entries[1].tags)).toEqual(expect.arrayContaining(capsuleTags));
+  });
+});
+
+/**
+ * Flag-only contradiction handling — the default since 2026-09.
+ *
+ * Contradiction detection depends on semantic recall, and it first ran for real
+ * the day recall was fixed (qa-2026-09/a0-fix-log.md). On nine seed captures it
+ * auto-deprecated two correct memories: a second pet judged a "different pet
+ * type", and a shipping note judged "carrier date differs". Both had to be
+ * restored by hand. The two cases are reproduced here in shape — same kind of
+ * memory, same verdict text — and must now leave the older memory exactly as
+ * it was.
+ */
+describe("captureEntry() — contradiction flag-only mode (default)", () => {
+  let db: D1Mock;
+  let env: Env;
+
+  beforeEach(() => {
+    db = makeTestDb();
+    env = makeTestEnv(db);
+  });
+
+  function seed(id: string, content: string, tags: string[] = ["personal"], source = "api") {
+    db.entries.push({
+      id, content, tags: JSON.stringify(tags), source,
+      created_at: 1_700_000_000_000, updated_at: 1_700_000_000_000,
+      vector_ids: JSON.stringify([`${id}-vec`]), recall_count: 3, importance_score: 3,
+      contradiction_wins: 0, contradiction_losses: 0,
+    });
+  }
+
+  function verdictEnv(conflictId: string, reason: string, score = 0.72) {
+    const deleteByIds = vi.fn().mockResolvedValue({ mutationId: "m" });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({ matches: [{ id: conflictId, score, metadata: { parentId: conflictId } }] }),
+        deleteByIds,
+      }),
+      AI: makeContradictionAI(JSON.stringify({ contradicts: true, conflicting_id: conflictId, reason })),
+    });
+    return { deleteByIds };
+  }
+
+  /** Everything the incident cost, asserted as a unit: the older row is untouched. */
+  function expectOlderMemoryIntact(id: string, deleteByIds: ReturnType<typeof vi.fn>) {
+    const row = db.entries.find(e => e.id === id)!;
+    expect(row, "older memory still exists").toBeDefined();
+    const tags: string[] = JSON.parse(row.tags);
+    expect(tags).not.toContain("status:deprecated");
+    expect(tags).not.toContain("status:draft");
+    expect(tags).toContain("personal");
+    expect(row.vector_ids, "still indexed — vectors not cleared").toBe(`["${id}-vec"]`);
+    expect(deleteByIds, "no Vectorize delete").not.toHaveBeenCalled();
+    expect(row.contradiction_losses ?? 0, "no loss recorded against it").toBe(0);
+    expect(row.contradiction_wins ?? 0).toBe(0);
+    expect(row.updated_at, "updated_at not bumped by a flag").toBe(1_700_000_000_000);
+    return tags;
+  }
+
+  it("regression (2026-09-14): a second pet is flagged, the first pet is NOT deprecated", async () => {
+    seed("dog", "I have a dog named Rex, a golden retriever.");
+    const { deleteByIds } = verdictEnv("dog", "different pet type");
+
+    const { ctx, drain } = makeCtx();
+    const result = await captureEntry("I also have a pet alligator named Chomp.", ["personal"], "api", env, ctx);
+    await drain();
+
+    expect(result.status).toBe("contradiction_flagged");
+    if (result.status !== "contradiction_flagged") return;
+    expect(result.conflictId).toBe("dog");
+    expect(result.reason).toBe("different pet type");
+
+    const olderTags = expectOlderMemoryIntact("dog", deleteByIds);
+    expect(olderTags).toContain("contradiction-candidate");
+
+    // The new memory is stored normally — not a draft, not a "resolution".
+    const added = db.entries.find(e => e.id === result.id)!;
+    expect(added).toBeDefined();
+    const newTags: string[] = JSON.parse(added.tags);
+    expect(newTags).toContain("contradiction-candidate");
+    expect(newTags).not.toContain("contradiction-resolved");
+    expect(newTags).not.toContain("status:draft");
+    expect(result.tags).toEqual(newTags);
+    expect(added.contradiction_wins ?? 0, "no win recorded for the newcomer").toBe(0);
+
+    // Linked for review, without the "target is now false" claim supersedes makes.
+    expect(db.edges).toHaveLength(1);
+    expect(db.edges[0].type).toBe("contradicts");
+    expect(db.edges[0].provenance).toBe("system");
+    expect(new Set([db.edges[0].source_id, db.edges[0].target_id])).toEqual(new Set([result.id, "dog"]));
+  });
+
+  it("regression (2026-09-14): a shipping-carrier date detail is flagged, the carrier fact is NOT deprecated", async () => {
+    seed("carrier", "Orders ship via UPS Ground; cutoff is 2pm Eastern.");
+    const { deleteByIds } = verdictEnv("carrier", "carrier date differs");
+
+    const { ctx, drain } = makeCtx();
+    const result = await captureEntry("The UPS pickup moved to 3pm starting September 20.", ["personal"], "api", env, ctx);
+    await drain();
+
+    expect(result.status).toBe("contradiction_flagged");
+    if (result.status !== "contradiction_flagged") return;
+    expect(result.conflictId).toBe("carrier");
+    const olderTags = expectOlderMemoryIntact("carrier", deleteByIds);
+    expect(olderTags).toContain("contradiction-candidate");
+    expect(db.entries).toHaveLength(2);
+    expect(db.edges.map(e => e.type)).toEqual(["contradicts"]);
+  });
+
+  it("a genuine contradiction is still flagged — and an explicit deprecation by a person is what resolves it", async () => {
+    seed("nyc", "I live in NYC.");
+    const { deleteByIds } = verdictEnv("nyc", "different city");
+
+    const { ctx, drain } = makeCtx();
+    const result = await captureEntry("I moved to LA.", ["personal"], "api", env, ctx);
+    await drain();
+
+    // Detected and surfaced, not silently resolved.
+    expect(result.status).toBe("contradiction_flagged");
+    if (result.status !== "contradiction_flagged") return;
+    expect(result.conflictId).toBe("nyc");
+    expect(result.reason).toBe("different city");
+    expectOlderMemoryIntact("nyc", deleteByIds);
+
+    // The follow-up action is the existing set_status path, unchanged.
+    expect(await applyStatus("nyc", "deprecated", env)).toBe(true);
+    const nyc = db.entries.find(e => e.id === "nyc")!;
+    expect(JSON.parse(nyc.tags)).toContain("status:deprecated");
+    expect(nyc.vector_ids).toBe("[]");
+    expect(deleteByIds).toHaveBeenCalledWith(["nyc-vec"]);
+  });
+
+  it("canonical protection is unchanged and stronger than a flag: the canonical memory is not even tagged", async () => {
+    seed("canon", "I live in NYC.", ["personal", "status:canonical"]);
+    const { deleteByIds } = verdictEnv("canon", "different city");
+
+    const { ctx, drain } = makeCtx();
+    const result = await captureEntry("I moved to LA.", ["personal"], "api", env, ctx);
+    await drain();
+
+    expect(result.status).toBe("contradiction_protected");
+    if (result.status !== "contradiction_protected") return;
+    expect(result.canonicalId).toBe("canon");
+    expect(result.entryStatus).toBe("draft");
+
+    const canon = db.entries.find(e => e.id === "canon")!;
+    const canonTags: string[] = JSON.parse(canon.tags);
+    expect(canonTags).toContain("status:canonical");
+    expect(canonTags).not.toContain("contradiction-candidate");
+    expect(canon.vector_ids).toBe('["canon-vec"]');
+    expect(deleteByIds).not.toHaveBeenCalled();
+
+    const added = db.entries.find(e => e.id === result.id)!;
+    const newTags: string[] = JSON.parse(added.tags);
+    expect(newTags).toContain("status:draft");
+    expect(newTags).not.toContain("contradiction-candidate");
+    expect(newTags).not.toContain("contradiction-resolved");
+    expect(db.edges).toHaveLength(0);
+  });
+
+  it("transcript protection is unchanged: a session log never flags or deprecates another source's memory", async () => {
+    seed("decision", "We decided to use Vectorize for semantic search.", ["work"], "claude");
+    verdictEnv("decision", "reversed decision");
+
+    const { ctx, drain } = makeCtx();
+    const result = await captureEntry("User: actually let's not use Vectorize.\n\nAssistant: understood.", [], "claude-code", env, ctx);
+    await drain();
+
+    expect(result.status).toBe("contradiction_protected");
+    expect(JSON.parse(db.entries.find(e => e.id === "decision")!.tags)).not.toContain("contradiction-candidate");
+    expect(db.edges).toHaveLength(0);
+  });
+
+  it("an unrecognised CONTRADICTION_MODE value fails towards flagging, not deprecating", async () => {
+    seed("nyc", "I live in NYC.");
+    const { deleteByIds } = verdictEnv("nyc", "different city");
+
+    const { ctx, drain } = makeCtx();
+    const result = await captureEntry("I moved to LA.", ["personal"], "api", env, ctx, { ...DEFAULTS, CONTRADICTION_MODE: "resovle" });
+    await drain();
+
+    expect(result.status).toBe("contradiction_flagged");
+    expectOlderMemoryIntact("nyc", deleteByIds);
+  });
+
+  it("CONTRADICTION_MODE=resolve is the only way to auto-deprecate", async () => {
+    seed("nyc", "I live in NYC.");
+    const { deleteByIds } = verdictEnv("nyc", "different city");
+
+    const { ctx, drain } = makeCtx();
+    const result = await captureEntry("I moved to LA.", ["personal"], "api", env, ctx, RESOLVE);
+    await drain();
+
+    expect(result.status).toBe("contradiction");
+    expect(JSON.parse(db.entries.find(e => e.id === "nyc")!.tags)).toContain("status:deprecated");
+    expect(deleteByIds).toHaveBeenCalledWith(["nyc-vec"]);
+    expect(db.edges.map(e => e.type)).toEqual(["supersedes"]);
+  });
+
+  it("in the near-duplicate band a contradiction verdict flags both duplicate-candidate and contradiction-candidate", async () => {
+    seed("nyc", "I live in NYC.");
+    const { deleteByIds } = verdictEnv("nyc", "different city", 0.9);
+    // In the 0.85–0.95 band the combined smart-merge prompt is used, whose
+    // contradiction answer has a different shape.
+    env.AI = makeContradictionAI('{"action":"contradiction","conflicting_id":"nyc","reason":"different city"}');
+
+    const { ctx, drain } = makeCtx();
+    const result = await captureEntry("I live in LA.", ["personal"], "api", env, ctx);
+    await drain();
+
+    expect(result.status).toBe("contradiction_flagged");
+    if (result.status !== "contradiction_flagged") return;
+    expect(result.tags).toEqual(expect.arrayContaining(["duplicate-candidate", "contradiction-candidate"]));
+    expectOlderMemoryIntact("nyc", deleteByIds);
+  });
+
+  it("an older memory already carrying contradiction-candidate is not tagged twice", async () => {
+    seed("nyc", "I live in NYC.", ["personal", "contradiction-candidate"]);
+    verdictEnv("nyc", "different city");
+
+    const { ctx, drain } = makeCtx();
+    const result = await captureEntry("I moved to LA.", ["personal"], "api", env, ctx);
+    await drain();
+
+    expect(result.status).toBe("contradiction_flagged");
+    const tags: string[] = JSON.parse(db.entries.find(e => e.id === "nyc")!.tags);
+    expect(tags.filter(t => t === "contradiction-candidate")).toHaveLength(1);
+  });
+
+  it("a failed tag write on the older memory is non-fatal: the capture is still stored and reported", async () => {
+    seed("nyc", "I live in NYC.");
+    verdictEnv("nyc", "different city");
+    const realPrepare = env.DB.prepare.bind(env.DB);
+    (env.DB as any).prepare = (sql: string) => {
+      const stmt = realPrepare(sql);
+      if (/UPDATE entries SET tags = \? WHERE id = \?/.test(sql)) {
+        const realBind = stmt.bind.bind(stmt);
+        stmt.bind = (...args: any[]) => {
+          const bound = realBind(...args);
+          bound.run = async () => { throw new Error("D1 hiccup"); };
+          return bound;
+        };
+      }
+      return stmt;
+    };
+
+    const { ctx, drain } = makeCtx();
+    const result = await captureEntry("I moved to LA.", ["personal"], "api", env, ctx);
+    await drain();
+
+    expect(result.status).toBe("contradiction_flagged");
+    if (result.status !== "contradiction_flagged") return;
+    expect(db.entries.find(e => e.id === result.id)).toBeDefined();
+    expect(db.edges.map(e => e.type)).toEqual(["contradicts"]);
   });
 });

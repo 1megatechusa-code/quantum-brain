@@ -4,6 +4,7 @@ import { makeTestDb, makeTestEnv, makeVectorizeMock } from "../helpers/make-env"
 import { req } from "../helpers/make-request";
 import type { Env } from "../../src/env";
 import { D1Mock } from "../helpers/d1-mock";
+import { CONFIG_KEY } from "../../src/config";
 
 const ctx = { waitUntil: (_: Promise<any>) => {} } as any;
 
@@ -255,7 +256,7 @@ describe("POST /capture — smart merge (flagged band 0.85–0.95)", () => {
 
   // ── Contradiction via combined prompt ─────────────────────────────────────────
 
-  it("contradiction detected via combined prompt in flagged band — new entry stored, conflicting DEPRECATED (not deleted)", async () => {
+  it("contradiction detected via combined prompt in flagged band — new entry stored, conflicting DEPRECATED (not deleted) when CONTRADICTION_MODE=resolve", async () => {
     seedEntry(db, "old-id", "I live in NYC");
     const deleteByIdsMock = vi.fn().mockResolvedValue({ mutationId: "m" });
     env = makeTestEnv(db, {
@@ -267,6 +268,9 @@ describe("POST /capture — smart merge (flagged band 0.85–0.95)", () => {
       }),
       AI: makeMergeAI('{"action":"contradiction","conflicting_id":"old-id","reason":"different city"}'),
     });
+    // Auto-deprecation is opt-in since 2026-09 (src/config.ts).
+    (env.OAUTH_KV.get as any).mockImplementation(async (key: string) =>
+      key === CONFIG_KEY ? JSON.stringify({ CONTRADICTION_MODE: "resolve" }) : null);
 
     const res = await worker.fetch(
       req("POST", "/capture", { body: { content: "I moved to LA" } }),
@@ -287,6 +291,42 @@ describe("POST /capture — smart merge (flagged band 0.85–0.95)", () => {
     expect(deleteByIdsMock).toHaveBeenCalledWith(["existing-id"]);
     // New entry also stored (total: old deprecated + new = 2)
     expect(db.entries).toHaveLength(2);
+  });
+
+  it("contradiction detected via combined prompt in flagged band — default config FLAGS the pair and deprecates nothing", async () => {
+    seedEntry(db, "old-id", "I live in NYC");
+    const deleteByIdsMock = vi.fn().mockResolvedValue({ mutationId: "m" });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({
+          matches: [{ id: "old-id", score: 0.88, metadata: { parentId: "old-id" } }],
+        }),
+        deleteByIds: deleteByIdsMock,
+      }),
+      AI: makeMergeAI('{"action":"contradiction","conflicting_id":"old-id","reason":"different city"}'),
+    });
+
+    const res = await worker.fetch(
+      req("POST", "/capture", { body: { content: "I moved to LA" } }),
+      env, ctx
+    );
+
+    const data = await res.json() as any;
+    expect(data.ok).toBe(true);
+    expect(data.flagged_conflict).toBe("old-id");
+    expect(data.reason).toBe("different city");
+    expect(data.resolved_conflict).toBeUndefined();
+    expect(data.tags).toEqual(expect.arrayContaining(["duplicate-candidate", "contradiction-candidate"]));
+
+    // Conflicting row untouched: still live, still indexed.
+    const conflictRow = db.entries.find((e: any) => e.id === "old-id");
+    const conflictTags: string[] = JSON.parse(conflictRow!.tags);
+    expect(conflictTags).not.toContain("status:deprecated");
+    expect(conflictTags).toContain("contradiction-candidate");
+    expect(conflictRow!.vector_ids).toBe('["existing-id"]');
+    expect(deleteByIdsMock).not.toHaveBeenCalled();
+    expect(db.entries).toHaveLength(2);
+    expect(db.edges.map((e: any) => e.type)).toEqual(["contradicts"]);
   });
 
   // ── Non-fatal error handling ──────────────────────────────────────────────────

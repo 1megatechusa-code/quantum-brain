@@ -29,7 +29,7 @@ const MACHINE_TAGS = new Set(["synthesized", "auto-pattern", "auto-insight"]);
 
 /** Bookkeeping tags that mark an entry's role rather than its subject. */
 const BOOKKEEPING_TAGS = new Set([
-  "rolled-up", "duplicate-candidate", "contradiction-resolved",
+  "rolled-up", "duplicate-candidate", "contradiction-resolved", "contradiction-candidate",
 ]);
 
 /**

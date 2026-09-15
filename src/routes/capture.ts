@@ -73,12 +73,14 @@ export async function handleCaptureRoutes(
 
     if (result.status !== "blocked") {
       // Audit at the edge where identity and ctx both live; the domain layer
-      // stays free of request state. "stored"/"flagged" are creations, the
-      // rest are rewrites of an existing row.
+      // stays free of request state. "stored"/"flagged"/"contradiction_flagged"
+      // are creations (a flagged contradiction rewrites nothing — it tags the
+      // older row and inserts the new one), the rest are rewrites of an
+      // existing row.
       auditEvent(env, ctx, {
         entryId: result.id,
         actorId: identity.userId,
-        event: result.status === "stored" || result.status === "flagged" ? "created" : "updated",
+        event: result.status === "stored" || result.status === "flagged" || result.status === "contradiction_flagged" ? "created" : "updated",
         payload: { captureStatus: result.status },
       });
     }
@@ -94,6 +96,16 @@ export async function handleCaptureRoutes(
     }
     if (result.status === "contradiction") {
       return json({ ok: true, id: result.id, resolved_conflict: result.resolvedConflict, reason: result.reason });
+    }
+    if (result.status === "contradiction_flagged") {
+      return json({
+        ok: true,
+        id: result.id,
+        flagged_conflict: result.conflictId,
+        reason: result.reason,
+        tags: result.tags,
+        message: "Stored — may contradict an existing memory; both kept and tagged contradiction-candidate for review",
+      });
     }
     if (result.status === "contradiction_protected") {
       return json({

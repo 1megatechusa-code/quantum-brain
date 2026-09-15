@@ -114,7 +114,7 @@ describe("reserved tags", () => {
   });
 
   it("treats compression bookkeeping tags as non-topics without calling them reserved", () => {
-    for (const tag of ["synthesized", "auto-pattern", "duplicate-candidate", "contradiction-resolved", "rolled-up"]) {
+    for (const tag of ["synthesized", "auto-pattern", "duplicate-candidate", "contradiction-resolved", "contradiction-candidate", "rolled-up"]) {
       expect(isTopicTag(tag)).toBe(false);
       expect(isReservedTag(tag)).toBe(false); // compressTag's guard is about namespaces only
       expect(isTopicTagSql()).toContain(`'${tag}'`);

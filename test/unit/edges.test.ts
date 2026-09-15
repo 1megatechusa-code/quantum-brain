@@ -21,6 +21,12 @@ describe("edge-type registry", () => {
     expect(isSymmetric("supersedes")).toBe(false);
   });
 
+  it("registers contradicts as a valid, UNdirected type for flagged contradictions", () => {
+    expect(isValidEdgeType("contradicts")).toBe(true);
+    expect(isSymmetric("contradicts" as any)).toBe(true);
+    expect(edgeLabel("contradicts" as any)).toBe("Contradicts");
+  });
+
   it("registers drawn_from as a valid, directed type for insight provenance", () => {
     expect(isValidEdgeType("drawn_from")).toBe(true);
     expect(isSymmetric("drawn_from" as any)).toBe(false);

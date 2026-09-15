@@ -68,6 +68,9 @@ const I18N_EN = {
     receiptConflict: 'stored, and something older now disagrees',
     receiptConflictNote:
       'Your brain noticed this conflicts with an earlier memory and kept the newer one.',
+    receiptConflictFlagged: 'stored, and it may disagree with something older',
+    receiptConflictFlaggedNote:
+      'Both memories are kept and searchable. They are linked and tagged so you can decide which one still holds.',
     receiptDraft: 'stored as a draft',
     receiptDraftNote:
       'This conflicts with a memory you have confirmed, so it is kept unconfirmed rather than overriding it.',
@@ -749,6 +752,9 @@ const I18N_IT = {
     receiptConflict: 'salvato, e qualcosa di più vecchio ora non coincide',
     receiptConflictNote:
       'Il cervello ha notato un conflitto con un ricordo precedente e ha tenuto quello più recente.',
+    receiptConflictFlagged: 'salvato, e potrebbe non coincidere con qualcosa di più vecchio',
+    receiptConflictFlaggedNote:
+      'Entrambi i ricordi sono conservati e cercabili. Sono collegati e segnati così puoi decidere quale vale ancora.',
     receiptDraft: 'salvato come bozza',
     receiptDraftNote:
       'È in conflitto con un ricordo che hai confermato, quindi resta non confermato invece di sovrascriverlo.',

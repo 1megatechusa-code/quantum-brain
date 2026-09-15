@@ -35,6 +35,7 @@ import { ensureTenantBootstrap } from "../../src/lib/tenancy";
 import { createMember } from "../../src/lib/team-admin";
 import { resolveIdentityFromToken } from "../../src/lib/identity";
 import { CROSS_WORKSPACE_LINK_MESSAGE } from "../../src/graph/edges";
+import { CONFIG_KEY } from "../../src/config";
 import type { Env } from "../../src/env";
 
 const ctx = { waitUntil: (_: Promise<any>) => {} } as ExecutionContext;
@@ -281,8 +282,14 @@ describe("a link the system draws on capture lands in the capturer's own layer",
    * A capture that supersedes an existing memory: the vector index answers with
    * `a-one` as a near neighbour, and the model calls it a contradiction the new
    * memory wins.
+   *
+   * "Wins" requires CONTRADICTION_MODE "resolve" — auto-deprecation has been
+   * opt-in since 2026-09 (src/config.ts). These tests are about WHERE the edge
+   * capture draws lands, and the supersedes edge is the one drawn in that mode;
+   * the flag-only default draws a `contradicts` edge, covered separately below.
    */
-  function contradictionEnv() {
+  function contradictionEnv(mode: "resolve" | "flag" = "resolve") {
+    if (mode === "resolve") void env.OAUTH_KV.put(CONFIG_KEY, JSON.stringify({ CONTRADICTION_MODE: "resolve" }));
     const sse = (text: string) => new ReadableStream({
       start(c) {
         c.enqueue(new TextEncoder().encode(`data: {"response":${JSON.stringify(text)}}\n\n`));
@@ -381,6 +388,38 @@ describe("a link the system draws on capture lands in the capturer's own layer",
       target_id: "co-one",
       workspace_id: companyWorkspaceId,
     });
+  });
+
+  it("flag-only default: the contradicts edge is stamped with the capturer's workspace and both memories stay live", async () => {
+    contradictionEnv("flag");
+
+    const body = await jsonOf(await call("POST", "/capture", alice.token, {
+      content: "Alice private: the migration plan was cancelled",
+    }));
+    expect(body.ok).toBe(true);
+    expect(body.flagged_conflict).toBe("a-one");
+    expect(body.resolved_conflict).toBeUndefined();
+
+    // No supersedes edge — nothing was superseded.
+    expect(await supersedesEdge()).toBeNull();
+    const rows = await edgeRows(body.id, "a-one");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].workspace_id).toBe(alice.personalWorkspaceId);
+    const typed = await sqlite.db
+      .prepare(`SELECT type, provenance FROM edges WHERE (source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?)`)
+      .bind(body.id, "a-one", "a-one", body.id).first() as { type: string; provenance: string };
+    expect(typed).toEqual({ type: "contradicts", provenance: "system" });
+
+    // The older memory kept its status and both carry the review tag.
+    const older = await sqlite.db.prepare(`SELECT tags FROM entries WHERE id = ?`).bind("a-one").first() as { tags: string };
+    expect(JSON.parse(older.tags)).toEqual(["contradiction-candidate"]);
+    const newer = await sqlite.db.prepare(`SELECT tags FROM entries WHERE id = ?`).bind(body.id).first() as { tags: string };
+    expect(JSON.parse(newer.tags)).toContain("contradiction-candidate");
+
+    // And the member sees the pair in their own graph, like any other link.
+    const view = await jsonOf(await call("GET", "/graph", alice.token));
+    expect(view.edges).toContainEqual(expect.objectContaining({ type: "contradicts" }));
+    expect(view.nodes.map((n: any) => n.id)).toEqual(expect.arrayContaining([body.id, "a-one"]));
   });
 });
 

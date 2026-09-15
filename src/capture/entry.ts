@@ -60,6 +60,10 @@ export type CaptureResult =
   | { status: "stored"; id: string; tags: string[] }
   | { status: "flagged"; id: string; matchId: string; score: number }
   | { status: "contradiction"; id: string; resolvedConflict: string; reason?: string }
+  // The default outcome of a detected contradiction: both memories are kept,
+  // tagged and linked, and nothing is deprecated. `conflictId` is the older
+  // side; `tags` is what landed on the new row, as for "stored".
+  | { status: "contradiction_flagged"; id: string; conflictId: string; reason?: string; tags: string[] }
   | { status: "contradiction_protected"; id: string; canonicalId: string; entryStatus: MemoryStatus | null; reason?: string }
   | { status: "merged"; id: string }
   | { status: "replaced"; id: string };
@@ -167,12 +171,14 @@ export async function captureEntry(
 
   // 公開可否をINSERT前に確定し、同時に読むgatewayへ矛盾したprefixを見せない。
   let protectConflict = false;
+  let conflictTags: string[] = [];
   if (contradiction.detected && contradiction.conflicting_id) {
     const conflictRow = await env.DB.prepare(
       // scope-exempt: by-id: the conflict id is one of the ids checkDuplicateAndContradiction hydrated under `AND workspace_id = ?` against this same writeCtx.workspaceId, and it only returns ids it hydrated — so this row is already known to be in the workspace being written to
       `SELECT tags, source FROM entries WHERE id = ?`
     ).bind(contradiction.conflicting_id).first() as Record<string, any> | null;
-    const conflictStatus = conflictRow ? getStatus(JSON.parse(conflictRow.tags ?? "[]")) : null;
+    conflictTags = conflictRow ? JSON.parse(conflictRow.tags ?? "[]") : [];
+    const conflictStatus = getStatus(conflictTags);
     const conflictSource = conflictRow ? String(conflictRow.source ?? "") : "";
     // Canonical memories were always protected here. A transcript gets the same
     // treatment against any memory of another source: the newcomer becomes a
@@ -184,9 +190,23 @@ export async function captureEntry(
 
   }
 
+  // The unprotected outcome is decided by CONTRADICTION_MODE (src/config.ts).
+  // The default, "flag", keeps both memories and marks the pair for a person;
+  // only an explicit "resolve" auto-deprecates the older one. Compared with a
+  // strict equality so that a misspelt override fails towards keeping data.
+  // Ordered after protectConflict on purpose: canonical and cross-source
+  // protection is the stronger layer and applies in both modes, so a protected
+  // conflict is never flagged either.
+  const flagConflict = contradiction.detected && !protectConflict && cfg.CONTRADICTION_MODE !== "resolve";
+
   const id = crypto.randomUUID();
   const now = Date.now();
-  const baseTags = contradiction.detected ? [...t, "contradiction-resolved"] : t;
+  // "contradiction-resolved" says the older memory lost; a flagged pair has no
+  // loser yet, so it carries "contradiction-candidate" instead — the same tag
+  // the older side receives below, so the two can be found together.
+  const baseTags = contradiction.detected
+    ? [...t, flagConflict ? "contradiction-candidate" : "contradiction-resolved"]
+    : t;
   const duplicateTags = dup.status === "flagged" ? [...baseTags, "duplicate-candidate"] : baseTags;
   const finalTags = protectConflict
     ? withStatus(duplicateTags.filter(tag => tag !== "contradiction-resolved"), "draft")
@@ -239,6 +259,41 @@ export async function captureEntry(
       };
     }
 
+    if (flagConflict) {
+      // Advisory outcome: nobody won, so nothing here is allowed to make one
+      // side harder to find than the other. The older memory keeps its status,
+      // its vectors and its place in recall; the new one landed above with no
+      // status change; and neither contradiction counter moves — a win/loss
+      // reshapes recall ranking (src/recall/math.ts) and compression
+      // eligibility, which is exactly the residue a false positive leaves
+      // behind. All that changes is a tag on each side and one undirected edge
+      // between them, and a person turns that into a deprecation (set_status)
+      // only if the disagreement is real.
+      try {
+        if (!conflictTags.includes("contradiction-candidate")) {
+          await env.DB.prepare(
+            // scope-exempt: by-id: same id the conflict read above hydrated, already known to be in the workspace being written to
+            `UPDATE entries SET tags = ? WHERE id = ?`
+          ).bind(JSON.stringify([...conflictTags, "contradiction-candidate"]), conflictId).run();
+        }
+      } catch (e) {
+        console.error("Contradiction candidate tag failed (non-fatal):", e);
+      }
+      try {
+        // Workspace-stamped for the same reason the supersedes edge below is.
+        await createEdge(id, conflictId, "contradicts", { provenance: "system", weight: 1.0, workspaceId: writeCtx.workspaceId }, env);
+      } catch (e) {
+        console.error("Contradicts edge creation failed (non-fatal):", e);
+      }
+      // The pair is already joined by the typed edge, so the conflict is
+      // dropped from the inference candidates exactly as the resolve path does.
+      classifyThenInfer(id, c, env, ctx, cfg, kind =>
+        inferEdgesOnWrite(id, neighbors.filter(n => n.id !== conflictId), env, { suppressId, newKind: kind }));
+      return { status: "contradiction_flagged", id, conflictId, reason: contradiction.reason, tags: finalTags };
+    }
+
+    // CONTRADICTION_MODE "resolve" only: the newcomer wins outright and the
+    // older memory is deprecated. Opt-in since 2026-09 — see src/config.ts.
     try {
       await env.DB.prepare(`UPDATE entries SET contradiction_wins = contradiction_wins + 1 WHERE id = ?`).bind(id).run();
       await env.DB.prepare(`UPDATE entries SET contradiction_losses = contradiction_losses + 1 WHERE id = ?`).bind(conflictId).run();

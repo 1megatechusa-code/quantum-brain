@@ -275,7 +275,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, identity?: Ident
         auditEvent(env, ctx, {
           entryId: result.id,
           actorId: identity.userId,
-          event: result.status === "stored" || result.status === "flagged" ? "created" : "updated",
+          event: result.status === "stored" || result.status === "flagged" || result.status === "contradiction_flagged" ? "created" : "updated",
           payload: { captureStatus: result.status },
         });
       }
@@ -284,6 +284,9 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, identity?: Ident
       }
       if (result.status === "contradiction") {
         return { content: [{ type: "text", text: `Stored. ID: ${result.id} — resolved contradiction with entry ${result.resolvedConflict}${result.reason ? `: ${result.reason}` : ""}.` }] };
+      }
+      if (result.status === "contradiction_flagged") {
+        return { content: [{ type: "text", text: `Stored. ID: ${result.id} — may contradict entry ${result.conflictId}${result.reason ? ` (${result.reason})` : ""}. Both memories are kept and searchable, tagged contradiction-candidate and linked. If one is genuinely wrong, deprecate it with set_status.` }] };
       }
       if (result.status === "contradiction_protected") {
         const disposition = result.entryStatus
@@ -765,6 +768,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, identity?: Ident
           + "decided: the source is a decision the target carries out or reflects; both memories must be episodic. "
           + "follows: the source came AFTER the target in the same line of thought; both memories must be episodic. "
           + "supersedes: the source replaces the target, and the target is treated as deprecated — use only when the older memory is genuinely wrong now. "
+          + "contradicts: the two memories disagree and neither has been judged wrong yet; no direction, nothing is deprecated (capture draws this itself when it flags a possible contradiction). "
           + "drawn_from: the source was derived from the target, as an insight is from its sources.",
         ),
       },

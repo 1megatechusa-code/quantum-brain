@@ -37,6 +37,11 @@ const RESERVED_TAG_PREFIXES = [
  * moment a contradiction is detected, exactly like the rest of these — but it was
  * missing from both this list and the display one, so it rendered as a tag the user
  * had chosen and an edit could delete it.
+ *
+ * `contradiction-candidate` is its flag-only sibling: captureEntry writes it on BOTH
+ * sides of a detected-but-unconfirmed contradiction (CONTRADICTION_MODE "flag", the
+ * default) instead of deprecating the older one. It marks a pair for a person to
+ * look at, the way `duplicate-candidate` does.
  */
 const PIPELINE_TAG_NAMES = new Set([
   "auto-pattern",
@@ -45,6 +50,7 @@ const PIPELINE_TAG_NAMES = new Set([
   "rolled-up",
   "duplicate-candidate",
   "contradiction-resolved",
+  "contradiction-candidate",
 ]);
 
 /** True when the tag is the brain's own bookkeeping rather than the user's word. */

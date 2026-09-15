@@ -29,6 +29,7 @@ describe("isSystemTag / humanTags", () => {
     // captureEntry writes this the moment a contradiction is detected, exactly like
     // the other pipeline markers — it was simply missing from the list.
     expect(isSystemTag("contradiction-resolved")).toBe(true);
+    expect(isSystemTag("contradiction-candidate")).toBe(true);
     expect(humanTags(["cycling", "contradiction-resolved"])).toEqual(["cycling"]);
   });
 

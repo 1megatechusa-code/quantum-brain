@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import worker from "../../src/index"; import { captureEntry } from "../../src/capture/entry";
 import { makeTestEnv, makeTestDb, makeVectorizeMock } from "../helpers/make-env";
+import { DEFAULTS } from "../../src/config";
 import { req } from "../helpers/make-request";
 import type { Env } from "../../src/env";
 import { D1Mock } from "../helpers/d1-mock";
@@ -536,7 +537,10 @@ describe("GET /recall", () => {
     });
 
     const captureCtx = { waitUntil: (_: Promise<any>) => {} } as any as ExecutionContext;
-    const captureResult = await captureEntry("I moved to Seattle", [], "api", captureEnv, captureCtx);
+    // A win is only recorded when the capture RESOLVES the contradiction, which
+    // is opt-in since 2026-09 (src/config.ts CONTRADICTION_MODE); the flag-only
+    // default deliberately leaves both counters alone.
+    const captureResult = await captureEntry("I moved to Seattle", [], "api", captureEnv, captureCtx, { ...DEFAULTS, CONTRADICTION_MODE: "resolve" });
 
     // Assert production code wrote contradiction_wins=1 on the new entry
     expect(captureResult.status).toBe("contradiction");

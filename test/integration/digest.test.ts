@@ -59,6 +59,7 @@ describe("GET /digest", () => {
     "duplicate-candidate",
     "Duplicate-Candidate",
     "contradiction-resolved",
+    "contradiction-candidate",
     "synthesized",
     "rolled-up",
     "stale:as-of",

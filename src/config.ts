@@ -62,6 +62,28 @@ export const DEFAULTS = {
   TAG_BOOST_MAX: 1.5,
   CONTRADICTION_IMPORTANCE_STEP: 1.0,
 
+  // ── Contradiction handling (src/capture/entry.ts) ──
+  // What a capture does when the contradiction check names an existing memory
+  // as conflicting with the new one: "flag" | "resolve".
+  //
+  //   "flag"    keeps BOTH memories live and searchable, tags each of them
+  //             `contradiction-candidate` and joins them with a `contradicts`
+  //             edge. A person decides which one is wrong (set_status).
+  //   "resolve" is the pre-2026-09 behaviour: the newcomer wins, the older
+  //             memory is auto-deprecated (vectors deleted, gone from recall).
+  //
+  // "flag" is the default and that is not cosmetic. The check fires on a 0.45
+  // nearest-neighbour score and a single model verdict, and on the first day it
+  // ran against a working index it auto-deprecated two CORRECT memories out of
+  // nine captures ("different pet type" on a second pet; "carrier date differs"
+  // on a shipping note). A wrong flag costs a tag a person can ignore; a wrong
+  // deprecation silently removes a true memory from every recall until someone
+  // notices it is missing. So auto-deprecation is opt-in. Any value other than
+  // "resolve" reads as "flag" — a typo must fail towards keeping data, not
+  // deleting it. Canonical memories and cross-source transcripts are protected
+  // in BOTH modes (captureEntry's protectConflict), and never even flagged.
+  CONTRADICTION_MODE: "flag",
+
   // ── Models (src/lib/ai.ts) ──
   LLM_MODEL: "@cf/meta/llama-4-scout-17b-16e-instruct",
   EMBEDDING_MODEL: "@cf/baai/bge-small-en-v1.5",
@@ -160,6 +182,7 @@ export const RULES: Record<ConfigKey, Rule> = {
   TAG_BOOST_STEP: { kind: "number", min: 0, max: 1 },
   TAG_BOOST_MAX: { kind: "number", min: 1, max: 5 },
   CONTRADICTION_IMPORTANCE_STEP: { kind: "number", min: 0, max: 5 },
+  CONTRADICTION_MODE: { kind: "string" },
 
   LLM_MODEL: { kind: "string" },
   EMBEDDING_MODEL: { kind: "string" },

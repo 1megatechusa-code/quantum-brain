@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { captureEntry } from "../../src/capture/entry";
+import { DEFAULTS } from "../../src/config";
 import { makeTestDb, makeTestEnv, makeVectorizeMock } from "../helpers/make-env";
 import type { Env } from "../../src/env";
 import { D1Mock } from "../helpers/d1-mock";
@@ -110,7 +111,7 @@ describe("auto-link on write (issue #16)", () => {
     expect(db.edges).toHaveLength(0);
   });
 
-  it("projects a supersedes edge (not a redundant relates_to) when a new entry wins a contradiction", async () => {
+  it("projects a contradicts edge (not a redundant relates_to) when a new entry is flagged against an incumbent", async () => {
     seedExisting(db); // non-canonical incumbent
     const env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({ query: vi.fn().mockResolvedValue({ matches: [match("existing", 0.9)] }) }),
@@ -119,6 +120,26 @@ describe("auto-link on write (issue #16)", () => {
     const { ctx, drain } = makeCtx();
 
     const result = await captureEntry("The corrected fact", [], "api", env, ctx);
+    await drain();
+
+    expect(result.status).toBe("contradiction_flagged");
+    if (result.status !== "contradiction_flagged") throw new Error("expected contradiction_flagged");
+    expect(db.edges).toHaveLength(1);
+    const e = db.edges[0];
+    expect(e.type).toBe("contradicts"); // undirected: neither side is deprecated by it
+    expect(e.provenance).toBe("system");
+    expect(new Set([e.source_id, e.target_id])).toEqual(new Set([result.id, "existing"]));
+  });
+
+  it("projects a supersedes edge (not a redundant relates_to) when a new entry wins a contradiction (CONTRADICTION_MODE=resolve)", async () => {
+    seedExisting(db); // non-canonical incumbent
+    const env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({ query: vi.fn().mockResolvedValue({ matches: [match("existing", 0.9)] }) }),
+      AI: makeAI('{"action":"contradiction","conflicting_id":"existing","reason":"conflict"}'),
+    });
+    const { ctx, drain } = makeCtx();
+
+    const result = await captureEntry("The corrected fact", [], "api", env, ctx, { ...DEFAULTS, CONTRADICTION_MODE: "resolve" });
     await drain();
 
     expect(result.status).toBe("contradiction");

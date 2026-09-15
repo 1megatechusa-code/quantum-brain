@@ -35,6 +35,9 @@ function captureReceipt(result, typedTags) {
   } else if (result.resolved_conflict) {
     headline = t('home.receiptConflict')
     notes.push(t('home.receiptConflictNote'))
+  } else if (result.flagged_conflict) {
+    headline = t('home.receiptConflictFlagged')
+    notes.push(t('home.receiptConflictFlaggedNote'))
   } else if (result.kept_canonical) {
     headline = t('home.receiptDraft')
     notes.push(t('home.receiptDraftNote'))

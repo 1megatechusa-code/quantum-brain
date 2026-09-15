@@ -4,6 +4,12 @@ import type { MemoryStatus } from "../memory/status";
 export const EDGE_TYPES = {
   relates_to:      { directed: false, label: "Related to",      allowedKinds: null },
   supersedes:      { directed: true,  label: "Supersedes",      allowedKinds: null },
+  // The two memories disagree and neither has been judged wrong. Undirected on
+  // purpose: `supersedes` is the directed claim that the target is now false,
+  // and capture draws THIS edge instead precisely because it is not making that
+  // claim (src/capture/entry.ts, CONTRADICTION_MODE "flag"). Neither endpoint
+  // is deprecated by it; a person promotes it to a status change if it holds.
+  contradicts:     { directed: false, label: "Contradicts",     allowedKinds: null },
   caused_by:       { directed: true,  label: "Caused by",       allowedKinds: null },
   decided:         { directed: true,  label: "Decided",         allowedKinds: ["episodic"] },
   about_person:    { directed: true,  label: "About person",    allowedKinds: null },

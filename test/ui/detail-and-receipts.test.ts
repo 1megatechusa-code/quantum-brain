@@ -267,6 +267,7 @@ describe("capture receipts", () => {
     expect(headline({ action: "merged" })).toContain("merged into an existing memory");
     expect(headline({ action: "replaced" })).toContain("replaced an outdated memory");
     expect(headline({ resolved_conflict: "abc" })).toContain("something older now disagrees");
+    expect(headline({ flagged_conflict: "abc" })).toContain("may disagree with something older");
     expect(headline({ kept_canonical: "abc" })).toContain("stored as a draft");
     expect(headline({ warning: "similar" })).toContain("close to something you already had");
   });
