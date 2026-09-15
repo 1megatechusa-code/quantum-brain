@@ -162,14 +162,34 @@ function fuseDenseAndKeyword(
 }
 
 /**
- * The union of two fused candidate lists, keyed by parent entry. `primary`
- * entries keep their score and order; a parent present only in `secondary` is
+ * The union of two fused candidate lists, keyed by parent entry. A parent in
+ * both keeps the `primary` object (its dense metadata and vector) but takes
+ * the LARGER of the two fused scores; a parent present only in `secondary` is
  * appended with its secondary score. See the P2c note at the call site.
+ *
+ * Larger-of, not primary-wins: the first cut kept the primary score, and the
+ * live brain showed why that is not enough. "does the user have any pets"
+ * distils to user/have/any/pets on a corpus where "user" is common but not
+ * saturated, so "…the user has a pet blue jay…" IS in the lexical list — on
+ * the one common word, with a score that loses to every other row mentioning
+ * a user — while its root-list score also counts the "pet" stem. Keeping the
+ * lexical score buried it exactly as before.
  */
 export function mergeFusedMatches(primary: VectorizeMatch[], secondary: VectorizeMatch[]): VectorizeMatch[] {
   const parentOf = (m: VectorizeMatch) => ((m.metadata as any)?.parentId ?? m.id) as string;
-  const seen = new Set(primary.map(parentOf));
-  const out = [...primary];
+  const secondaryScore = new Map<string, number>();
+  for (const m of secondary) {
+    const pid = parentOf(m);
+    secondaryScore.set(pid, Math.max(secondaryScore.get(pid) ?? 0, m.score));
+  }
+  const seen = new Set<string>();
+  const out: VectorizeMatch[] = [];
+  for (const m of primary) {
+    const pid = parentOf(m);
+    seen.add(pid);
+    const other = secondaryScore.get(pid);
+    out.push(other !== undefined && other > m.score ? { ...m, score: other } : m);
+  }
   for (const m of secondary) {
     const pid = parentOf(m);
     if (seen.has(pid)) continue;
@@ -385,10 +405,11 @@ export async function recallEntries(
   // away any row that matched the query ONLY through a stem or a probe the
   // moment some other row matched a distilled token: "does the user have any
   // pets" fetched "…has a pet blue jay…" through the keyword arm and then never
-  // scored it. Every lexical entry keeps its lexical score and position, so the
-  // ordering among candidates that were already present is unchanged; a row the
-  // root fusion found and the lexical one did not is appended with its root
-  // score and competes in the rerank like any other candidate.
+  // scored it. Every lexical entry keeps its lexical object and position and
+  // takes the larger of its two fused scores (Q7: a row the dense arm returned
+  // is in BOTH lists, and only the root list credits its stem); a row the root
+  // fusion found and the lexical one did not is appended with its root score.
+  // Either way it competes in the rerank like any other candidate.
   const fusedMatches = mergeFusedMatches(lexicalFusedMatches, rootFusedMatches);
   if (!rootFusedMatches.length && !fusedMatches.length) return { matches: [], insight: "", semanticUnavailable };
 

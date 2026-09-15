@@ -37,6 +37,31 @@ export const RECENCY_FLOOR_VOLATILE = 0.15;
 // stopping near-duplicate (usually recent) memories from taking every slot.
 export const MMR_LAMBDA = 0.7;
 
+// MMR relevance is a candidate's POSITION in the score-ranked pool, spread over
+// the widest dense window recall fetches (the 50-vector widen query), not its
+// score as a fraction of the top score (QA 2026-09, Q7). Fused scores are RRF
+// ranks, 1/(60+rank): the whole 50-row pool spans only ~1.8x, so score/maxRel
+// put every candidate within ~0.25 of each other while 0.3*cosine varied by
+// 0.10-0.21 — the diversity term outweighed rank 1 vs rank ~40, and MMR became
+// "pick whatever is least like what is already selected". A keyword-only row
+// at the top (IDF weight ~6x any dense score) made it worse. Position on a
+// fixed 50-wide scale is immune to both: one rank costs 0.7/50 = 0.014, so a
+// near-duplicate (cosine 0.95 vs the 0.4 floor) costs ~12 ranks and a same-
+// topic row (0.65) ~5, instead of 26 and 12. A pool smaller than the scale
+// keeps everyone near 1 — the old behaviour for tiny brains and unit fixtures,
+// where four near-duplicates and one distinct row must still yield the
+// distinct row.
+export const MMR_RANK_SCALE = 50;
+
+// The similarity charged when either side of a pair has no vector — the
+// keyword-only candidates fuseDenseAndKeyword appends, which Vectorize never
+// scored. bge-small-en-v1.5 rarely scores unrelated text below ~0.3 and live
+// unrelated pairs measure 0.34-0.42, so this is "assume unrelated", the same
+// footing a dense row at the floor gets. It replaces an exemption: unknown
+// used to mean 0, which let a keyword-only row out-pick every dense row that
+// merely resembled the top hit (QA 2026-09, Q7).
+export const MMR_UNKNOWN_SIMILARITY = 0.4;
+
 export function getRecencyFloor(tags: string[], imp: number, config: Readonly<Config> = DEFAULTS): number {
   if (getStatus(tags) === "canonical" || imp >= 4) return config.RECENCY_FLOOR_DURABLE;
   const vol = getVolatility(tags);
@@ -125,8 +150,12 @@ export function rerankWithTimeDecay(
 export function mmrRerank<T extends VectorizeMatch>(candidates: T[], lambda: number, k: number): T[] {
   if (candidates.length <= 1 || k <= 1) return candidates.slice(0, k);
   const pool = [...candidates].sort((a, b) => b.score - a.score);
-  const maxRel = pool[0].score || 1;
-  const rel = (m: VectorizeMatch) => (maxRel > 0 ? m.score / maxRel : 0);
+  // Position on the fixed scale (see MMR_RANK_SCALE); a pool wider than the
+  // scale still spreads evenly over [0, 1].
+  const span = Math.max(pool.length, MMR_RANK_SCALE) - 1;
+  const rel = new Map<VectorizeMatch, number>(pool.map((m, i) => [m, 1 - i / span]));
+  const sim = (a: VectorizeMatch, b: VectorizeMatch) =>
+    a.values && b.values ? cosineSim(a.values, b.values) : MMR_UNKNOWN_SIMILARITY;
 
   const selected: T[] = [pool.shift()!];
   while (selected.length < k && pool.length) {
@@ -135,12 +164,8 @@ export function mmrRerank<T extends VectorizeMatch>(candidates: T[], lambda: num
     for (let i = 0; i < pool.length; i++) {
       const cand = pool[i];
       let maxSim = 0;
-      if (cand.values) {
-        for (const s of selected) {
-          if (s.values) maxSim = Math.max(maxSim, cosineSim(cand.values, s.values));
-        }
-      }
-      const mmr = lambda * rel(cand) - (1 - lambda) * maxSim;
+      for (const s of selected) maxSim = Math.max(maxSim, sim(cand, s));
+      const mmr = lambda * rel.get(cand)! - (1 - lambda) * maxSim;
       if (mmr > bestMmr) { bestMmr = mmr; bestIdx = i; }
     }
     selected.push(pool.splice(bestIdx, 1)[0]);
