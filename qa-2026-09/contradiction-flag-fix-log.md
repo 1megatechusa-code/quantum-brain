@@ -120,8 +120,8 @@ match the data:
 
 | Entry | Tags now | `status:canonical`? | Counters | Notes |
 |---|---|---|---|---|
-| `f984844f…` "Has a new pet alligator." | `kind:episodic, volatility:durable` | **no** | wins 0 / losses 1 | losses=1 and `updated_at` 2026-09-14T15:30Z are the 09-14 residuals; protected from now on by the flag-only default (proven live above) |
-| `6beb831c…` "DynamiteDTF will switch its shipping carrier to UPS…" | `dynamitedtf, shipping, ups, carrier, kind:semantic, volatility:state` | **no** | wins 0 / losses 1 | same residuals; protected by the flag-only default |
+| `f984844f…` "Has a new pet alligator." | `kind:episodic, volatility:durable` | **no** | wins 0 / losses 0 (cleared 09-15, see below) | `updated_at` 2026-09-14T15:30Z is the restoration residual; protected from now on by the flag-only default (proven live above) |
+| `6beb831c…` "DynamiteDTF will switch its shipping carrier to UPS…" | `dynamitedtf, shipping, ups, carrier, kind:semantic, volatility:state` | **no** | wins 0 / losses 0 (cleared 09-15, see below) | same; protected by the flag-only default |
 
 The only `status:canonical` rows in that workspace are `d359285e…` (coffee black), `3ece924e…` (dog
 Joker) and `f4c01e6c…` (a `conflict_test` entry), all marked **2026-09-13**, i.e. before the incident —
@@ -132,10 +132,10 @@ someone's data for no benefit; canonical remains the stronger, opt-in layer on t
 ## Residual / follow-ups
 
 - Airtable `recU4GOFQgs6nWNi0`: can be moved to fixed/deployed with version `f26b0448…`.
-- The 09-14 residuals (`contradiction_losses = 1`, `updated_at` reset) on the two entries remain; the
-  loss counter shifts their recall multiplier slightly downward (`src/recall/math.ts`). A one-off
-  `UPDATE … SET contradiction_losses = 0` on the two ids would remove it; not done here because it was
-  not asked for and it is a judgment call on data, not code.
+- The 09-14 `contradiction_losses = 1` residual on both entries was **cleared to 0 on 2026-09-15** at the
+  owner's request (guarded D1 UPDATE on the two ids in `ws-1925db93…`, 2 rows changed; read-back
+  confirmed wins 0 / losses 0, tags, vectors and `updated_at` untouched). The `updated_at` reset from the
+  09-14 restoration remains; it is informational only.
 - `contradiction-candidate` pairs have no review UI yet: they are findable by tag (`list_recent`,
   `recall` with `tag`) and by `connections`, and resolved with `set_status deprecated`.
 - The nearest-neighbour candidate threshold (0.45) and the two prompts are unchanged; the model still
